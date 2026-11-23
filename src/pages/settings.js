@@ -6,13 +6,15 @@ export async function renderSettings(main, ctx) {
   const hoursCard = h('section', { class: 'card' });
   const modelsCard = h('section', { class: 'card' });
   const tasksCard = h('section', { class: 'card' });
+  const typesCard = h('section', { class: 'card' });
   mount(main,
     h('h1', { class: 'page-title' }, 'Settings'),
-    h('div', { class: 'stack-lg' }, hoursCard, modelsCard, tasksCard),
+    h('div', { class: 'stack-lg' }, hoursCard, modelsCard, typesCard, tasksCard),
   );
   await Promise.all([
     renderHours(hoursCard, ctx),
     renderRefList(modelsCard, MODELS),
+    renderRefList(typesCard, BUILD_TYPES),
     renderRefList(tasksCard, TASKS),
   ]);
 }
@@ -65,13 +67,24 @@ const MODELS = {
   title: 'Pump models',
   singular: 'pump model',
   help: 'Inactive models are hidden when planning but kept in past weeks. Delete only works for models never used.',
-  columns: 'id, name, short_code, is_trial, active, sort_order',
-  flags: [
-    { key: 'is_trial', label: 'Trial unit', badge: 'trial' },
-  ],
+  columns: 'id, name, short_code, active, sort_order',
+  flags: [],
   extraFields: [
     { key: 'short_code', label: 'Short code', hint: 'Optional short name for the planner grid, e.g. MATS', maxlength: 12 },
   ],
+};
+
+const BUILD_TYPES = {
+  table: 'build_types',
+  title: 'Build types',
+  singular: 'build type',
+  help: 'Every pump job is tagged with a build type (shown as a coloured tag in the planner). The default type is pre-selected for new work.',
+  columns: 'id, name, color, is_default, active, sort_order',
+  flags: [],
+  extraFields: [
+    { key: 'color', label: 'Colour', type: 'color', default: '#64748b' },
+  ],
+  hasDefault: true,
 };
 
 const TASKS = {
@@ -119,6 +132,16 @@ async function renderRefList(card, cfg) {
     }
   };
 
+  const makeDefault = async (row) => {
+    // Only one default is allowed (unique index), so clear the old one first.
+    let { error: err } = await supabase.from(cfg.table).update({ is_default: false }).eq('is_default', true);
+    if (!err) ({ error: err } = await supabase.from(cfg.table).update({ is_default: true }).eq('id', row.id));
+    if (!reportError(err, 'Updating')) {
+      toast(`${row.name} is now the default.`, 'success');
+      reload();
+    }
+  };
+
   const remove = async (row) => {
     if (!(await confirmDialog(`Delete ${cfg.singular}?`, `Delete "${row.name}" permanently? If it has been used anywhere, deactivate it instead.`))) return;
     const { error: err } = await supabase.from(cfg.table).delete().eq('id', row.id);
@@ -131,17 +154,21 @@ async function renderRefList(card, cfg) {
   const list = h('ul', { class: 'ref-list' }, rows.map((row, i) =>
     h('li', { class: row.active ? '' : 'inactive' },
       h('div', { class: 'ref-main' },
+        row.color ? h('span', { class: 'swatch', style: `background:${row.color}`, 'aria-hidden': 'true' }) : null,
         h('span', { class: 'ref-name' }, row.name),
-        cfg.extraFields.map((x) => (row[x.key] ? h('span', { class: 'tag' }, row[x.key]) : null)),
+        cfg.extraFields.map((x) => (x.type !== 'color' && row[x.key] ? h('span', { class: 'tag' }, row[x.key]) : null)),
+        row.is_default ? h('span', { class: 'tag tag-accent' }, 'default') : null,
         cfg.flags.map((fl) => (row[fl.key] ? h('span', { class: `tag ${fl.accent ? 'tag-accent' : ''}` }, fl.badge) : null)),
         row.active ? null : h('span', { class: 'tag tag-muted' }, 'inactive'),
       ),
       h('div', { class: 'ref-actions' },
         h('button', { class: 'btn btn-sm btn-ghost', title: 'Move up', 'aria-label': `Move ${row.name} up`, disabled: i === 0, onclick: () => move(i, -1) }, '↑'),
         h('button', { class: 'btn btn-sm btn-ghost', title: 'Move down', 'aria-label': `Move ${row.name} down`, disabled: i === rows.length - 1, onclick: () => move(i, 1) }, '↓'),
+        cfg.hasDefault && !row.is_default && row.active
+          ? h('button', { class: 'btn btn-sm', onclick: () => makeDefault(row) }, 'Make default') : null,
         h('button', { class: 'btn btn-sm', onclick: () => editRef(cfg, row, reload) }, 'Edit'),
-        h('button', { class: 'btn btn-sm', onclick: () => toggleActive(row) }, row.active ? 'Deactivate' : 'Reactivate'),
-        h('button', { class: 'btn btn-sm btn-danger', onclick: () => remove(row) }, 'Delete'),
+        row.is_default ? null : h('button', { class: 'btn btn-sm', onclick: () => toggleActive(row) }, row.active ? 'Deactivate' : 'Reactivate'),
+        row.is_default ? null : h('button', { class: 'btn btn-sm btn-danger', onclick: () => remove(row) }, 'Delete'),
       ),
     ),
   ));
@@ -163,7 +190,9 @@ function editRef(cfg, row, onSaved, nextSortOrder) {
   const name = h('input', { type: 'text', value: row?.name ?? '', required: true, maxlength: 80 });
   const extras = cfg.extraFields.map((x) => ({
     key: x.key,
-    input: h('input', { type: 'text', value: row?.[x.key] ?? '', maxlength: x.maxlength }),
+    input: x.type === 'color'
+      ? h('input', { type: 'color', value: row?.[x.key] ?? x.default, class: 'color-input' })
+      : h('input', { type: 'text', value: row?.[x.key] ?? '', maxlength: x.maxlength }),
     ...x,
   }));
   const flags = cfg.flags.map((fl) => ({ key: fl.key, ...checkbox(fl.label, row ? row[fl.key] : fl.key === 'requires_pump') }));

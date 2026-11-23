@@ -29,6 +29,8 @@ Live site (once deployed): `https://meditecmedicalai-gif.github.io/meditec-produ
 2. Paste the whole of [`supabase/migrations/001_init.sql`](supabase/migrations/001_init.sql) and click **Run**.
    It creates all tables, security policies, the change log triggers, and seeds the pump models,
    tasks and working hours. It is safe to run again.
+3. Do the same with each later migration in order: [`002_build_types.sql`](supabase/migrations/002_build_types.sql)
+   (build types: Production / Trial / Rental / Customer).
 
 ### 3. Lock down sign-in
 1. **Authentication → Sign In / Providers** (called *Providers* in some versions):
@@ -83,7 +85,7 @@ Every row in the result should say **PASS**. It rolls everything back, so no tes
 ### 7. Sign in
 Open the site, sign in with the account from step 4 and check that:
 - the header shows your name, the **admin** badge and the working hours (08:30–16:30);
-- the Planner page lists 8 pump models and 9 tasks;
+- the Planner page shows the current week, and Settings lists 8 pump models, 4 build types and 9 tasks;
 - Elaine's account shows the **viewer** badge and no Settings link.
 
 ---
@@ -125,8 +127,24 @@ src/pages/                         one file per page
 .github/workflows/deploy.yml       build + deploy to GitHub Pages on push to main
 ```
 
+## Using the planner
+- **Weekly grid:** people × Mon–Fri. Use ‹ Prev / This week / Next › to move between weeks; the URL
+  (`#/planner?week=2026-11-23`) can be bookmarked or shared.
+- **+ Add** in a cell adds work: task, pump model, build type, quantity and notes. Tick several days
+  to add the same job to each. Click a job to edit, delete or **Duplicate…** it.
+- **Absent** marks Holiday / Sick / Training / Off-site for a day or a date range. Click the banner to
+  change or remove it.
+- **⚠** on a job means the person is not trained on that pump model or is absent that day. You are
+  asked to confirm before saving such a job, but it is allowed (e.g. supervised training).
+- **Copy last week** copies last week's jobs to the same weekdays, skipping days where the person is
+  absent and anything inactive.
+- **Build types** (Settings) tag each pump job, e.g. Production, Trial, Rental, Customer, each with its
+  own colour. The default type (Production) is pre-selected and is used automatically if a pump job is
+  saved without one. Tasks that don't need a pump (Training, Stock room / 5S, Other) can have no type.
+- **On a phone** the planner shows one day at a time with day tabs.
+
 ## Change history (audit log)
-Every insert, update and delete on **assignments**, **absences** and **demand notes** is recorded
+Every insert, update and delete on **assignments**, **absences**, **demand notes** and **build types** is recorded
 automatically in `audit_log` (who, when, old and new values) by database triggers. Only admins can
 read it, and nobody can edit it through the app or API. A History page arrives in Phase 5.
 This is a planning aid, not a controlled QMS record.
@@ -134,6 +152,6 @@ This is a planning aid, not a controlled QMS record.
 ## Build phases
 1. ✅ Database, security & sign-in
 2. ✅ People & skills matrix, Settings (pump models, tasks, working hours)
-3. Weekly planner (incl. absences)
-4. Demand & notes
-5. Weekly summary, History view, print view
+3. ✅ Weekly planner, absences and build types
+4. Demand & notes (with build-type filter)
+5. Weekly summary by pump model and build type, History view, print view

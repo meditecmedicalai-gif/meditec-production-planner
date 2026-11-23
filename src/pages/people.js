@@ -8,7 +8,7 @@ let showInactive = false;
 export async function renderPeople(main) {
   const [people, models, skills] = await Promise.all([
     supabase.from('people').select('id, name, job_title, notes, active').order('name'),
-    supabase.from('pump_models').select('id, name, short_code, is_trial, active').order('sort_order').order('name'),
+    supabase.from('pump_models').select('id, name, short_code, active').order('sort_order').order('name'),
     supabase.from('person_skills').select('person_id, pump_model_id'),
   ]);
   if (reportError(people.error || models.error || skills.error, 'Loading people')) return;
@@ -47,7 +47,6 @@ export async function renderPeople(main) {
     h('th', { class: 'sticky-col', scope: 'col' }, 'Name'),
     activeModels.map((m) => h('th', { class: 'skill-col', scope: 'col', title: m.name },
       h('span', {}, m.short_code || m.name),
-      m.is_trial ? h('span', { class: 'tag tag-small' }, 'trial') : null,
     )),
     h('th', { scope: 'col', class: 'num', title: 'Number of pump models trained on' }, 'Trained'),
     admin ? h('th', { scope: 'col' }, h('span', { class: 'sr-only' }, 'Actions')) : null,
