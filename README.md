@@ -88,6 +88,24 @@ Open the site, sign in with the account from step 4 and check that:
 
 ---
 
+## Updating the database
+
+Migrations live in `supabase/migrations/` and are numbered. When a pull request adds or changes
+one, paste it into the SQL Editor and run it **before** merging. All migrations are written to be
+safe to run more than once.
+
+Rules for every migration that adds a table (they prevent the
+"permission denied for table …" error and keep the data locked down):
+1. `alter table … enable row level security;` plus policies for it.
+2. Re-run the grants for the `authenticated` role (newer Supabase projects don't add them automatically):
+   ```sql
+   grant select, insert, update, delete on all tables in schema public to authenticated;
+   grant usage, select on all sequences in schema public to authenticated;
+   ```
+3. Then re-apply `revoke insert, update, delete, truncate on public.audit_log from authenticated;`.
+
+`supabase/tests/rls_check.sql` checks all of this: it fails if any table is missing RLS or grants.
+
 ## Local development (optional)
 
 ```bash
@@ -115,7 +133,7 @@ This is a planning aid, not a controlled QMS record.
 
 ## Build phases
 1. ✅ Database, security & sign-in
-2. People & reference data (pump models, tasks, working hours)
+2. ✅ People & skills matrix, Settings (pump models, tasks, working hours)
 3. Weekly planner (incl. absences)
 4. Demand & notes
 5. Weekly summary, History view, print view

@@ -187,3 +187,64 @@ input:focus, select:focus, textarea:focus, .btn:focus-visible, a:focus-visible {
   .hours .muted { display: none; }
   .page { padding-top: 1rem; }
 }
+
+/* ---------- phase 2: forms, lists, matrix ---------- */
+.sr-only { position: absolute; top: 0; left: 0; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); clip-path: inset(50%); white-space: nowrap; }
+.stack-lg { display: flex; flex-direction: column; gap: 1.25rem; }
+.hint { font-size: .8rem; color: var(--muted); }
+.form-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: .9rem 1rem; }
+.form-actions { margin-top: 1rem; }
+.check { display: inline-flex; align-items: center; gap: .5rem; cursor: pointer; font-size: .92rem; }
+.check input, .skill-cell input { width: 1.1rem; height: 1.1rem; margin: 0; accent-color: var(--accent); cursor: pointer; }
+.check-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: .5rem 1rem; }
+.skills-fieldset { border: 1px solid var(--border); border-radius: 8px; padding: .6rem .9rem .9rem; margin: 0; }
+.skills-fieldset legend { font-weight: 550; font-size: .9rem; padding: 0 .3rem; }
+textarea { resize: vertical; }
+
+.page-head { display: flex; align-items: center; justify-content: space-between; gap: 1rem; flex-wrap: wrap; margin-bottom: 1rem; }
+.page-head .page-title { margin: 0; }
+.page-head-actions { display: flex; align-items: center; gap: 1rem; flex-wrap: wrap; }
+.card-head { display: flex; align-items: baseline; justify-content: space-between; gap: .5rem 1rem; flex-wrap: wrap; margin-bottom: .25rem; }
+.card-head h2 { margin: 0; }
+.card-flush { padding: 0; overflow: hidden; }
+.card-pad { padding: 1rem 1.25rem .75rem; }
+.empty { color: var(--muted); text-align: center; padding: 2rem 1rem; }
+.tag-muted { background: transparent; border: 1px dashed var(--border); }
+.tag-small { font-size: .65rem; margin-left: .25rem; padding: 0 .3rem; }
+
+.ref-list { list-style: none; margin: .5rem 0 0; padding: 0; }
+.ref-list li {
+  display: flex; align-items: center; justify-content: space-between; gap: .5rem 1rem; flex-wrap: wrap;
+  padding: .5rem 0; border-bottom: 1px solid var(--border);
+}
+.ref-list li:last-child { border-bottom: 0; }
+.ref-list li.inactive .ref-name { color: var(--muted); text-decoration: line-through; }
+.ref-main { display: flex; align-items: center; flex-wrap: wrap; gap: .2rem 0; min-width: 0; }
+.ref-name { font-weight: 550; }
+.ref-actions { display: flex; gap: .3rem; flex-wrap: wrap; }
+
+.table-scroll { overflow-x: auto; border-top: 1px solid var(--border); position: relative; }
+.matrix { border-collapse: separate; border-spacing: 0; width: 100%; font-size: .9rem; }
+.matrix th, .matrix td { padding: .55rem .6rem; border-bottom: 1px solid var(--border); text-align: left; vertical-align: middle; }
+.matrix thead th { background: var(--surface-2); font-size: .78rem; font-weight: 650; color: var(--muted); white-space: nowrap; position: sticky; top: 0; }
+.matrix tbody tr:hover > * { background: var(--surface-2); }
+.matrix tbody tr:last-child > * { border-bottom: 0; }
+.matrix tr.inactive .person-name { color: var(--muted); }
+.sticky-col { position: sticky; left: 0; background: var(--surface); z-index: 1; min-width: 170px; max-width: 240px; border-right: 1px solid var(--border); }
+.matrix thead .sticky-col { background: var(--surface-2); z-index: 2; }
+.skill-col, .skill-cell { text-align: center !important; min-width: 64px; }
+.skill-cell { padding: 0 !important; }
+.skill-cell input { margin: .7rem auto; display: block; }
+.tick { color: var(--accent); font-weight: 700; }
+.person-cell { font-weight: 400; }
+.person-name { font-weight: 600; display: flex; align-items: center; flex-wrap: wrap; }
+.person-notes { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 220px; }
+.num { text-align: center !important; font-variant-numeric: tabular-nums; }
+.row-actions { white-space: nowrap; text-align: right !important; }
+.modal-actions .btn-danger { margin-right: auto; }
+
+@media (max-width: 720px) {
+  .sticky-col { min-width: 130px; max-width: 150px; }
+  .person-notes { display: none; }
+  .ref-actions .btn { padding: .3rem .5rem; }
+}
