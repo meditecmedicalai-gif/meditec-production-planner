@@ -315,10 +315,21 @@ alter table public.demand_notes  enable row level security;
 alter table public.app_settings  enable row level security;
 alter table public.audit_log     enable row level security;
 
+-- Table privileges. Newer Supabase projects do not grant these to the
+-- API roles automatically. A grant only lets the role *reach* a table;
+-- RLS policies (below) still decide which rows it may read or change.
+-- RULE FOR FUTURE MIGRATIONS: every new table needs RLS enabled, policies,
+-- and these grants re-run (they are repeated at the end of each migration).
+grant usage on schema public to authenticated;
+grant select, insert, update, delete on all tables in schema public to authenticated;
+grant usage, select on all sequences in schema public to authenticated;
+grant execute on all functions in schema public to authenticated;
+
 -- Logged-out visitors (anon key only) get no table access at all.
 revoke all on all tables in schema public from anon;
 
--- The audit log can never be written or changed through the API.
+-- The audit log can never be written or changed through the API
+-- (must come AFTER the blanket grant above).
 revoke insert, update, delete, truncate on public.audit_log from authenticated;
 
 -- profiles: members can see who is who; only admins change roles/status.

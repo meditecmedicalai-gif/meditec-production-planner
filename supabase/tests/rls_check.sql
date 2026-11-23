@@ -10,6 +10,24 @@ create temp table rls_results (n serial, who text, check_name text, result text)
 grant all on rls_results to authenticated, anon;
 grant usage on sequence rls_results_n_seq to authenticated, anon;
 
+-- ------------------------------------------------------- table settings
+-- Every table in "public" must have RLS switched on, and the signed-in
+-- role must have table privileges (otherwise the app shows
+-- "permission denied for table ...").
+insert into rls_results (who, check_name, result)
+select 'setup', 'RLS enabled: ' || c.relname,
+       case when c.relrowsecurity then 'PASS' else 'FAIL - run: alter table public.' || c.relname || ' enable row level security' end
+from pg_class c join pg_namespace n on n.oid = c.relnamespace
+where n.nspname = 'public' and c.relkind = 'r'
+order by c.relname;
+
+insert into rls_results (who, check_name, result)
+select 'setup', 'signed-in users can reach table: ' || c.relname,
+       case when has_table_privilege('authenticated', c.oid, 'SELECT') then 'PASS' else 'FAIL - re-run the grants in the migration' end
+from pg_class c join pg_namespace n on n.oid = c.relnamespace
+where n.nspname = 'public' and c.relkind = 'r'
+order by c.relname;
+
 -- ---------------------------------------------------------------- viewer
 select set_config('request.jwt.claims',
        json_build_object('sub', id, 'role', 'authenticated')::text, true)
@@ -23,6 +41,9 @@ begin
     insert into rls_results (who, check_name, result) values ('viewer', 'viewer e-mail found', 'FAIL - check the e-mail address');
     return;
   end if;
+
+  select count(*) into n from public.profiles where id = auth.uid();
+  insert into rls_results (who, check_name, result) values ('viewer', 'can read own profile', case when n = 1 then 'PASS' else 'FAIL' end);
 
   select count(*) into n from public.pump_models;
   insert into rls_results (who, check_name, result) values ('viewer', 'can read pump models', case when n > 0 then 'PASS' else 'FAIL' end);
@@ -48,6 +69,26 @@ begin
   update public.pump_models set name = name || ' x';
   get diagnostics n = row_count;
   insert into rls_results (who, check_name, result) values ('viewer', 'cannot edit pump models', case when n = 0 then 'PASS' else 'FAIL' end);
+
+  update public.people set name = name || ' x';
+  get diagnostics n = row_count;
+  insert into rls_results (who, check_name, result) values ('viewer', 'cannot edit people', case when n = 0 then 'PASS' else 'FAIL' end);
+
+  begin
+    insert into public.person_skills (person_id, pump_model_id)
+    select p.id, m.id from public.people p cross join public.pump_models m limit 1;
+    get diagnostics n = row_count;
+    insert into rls_results (who, check_name, result) values ('viewer', 'cannot change skills', case when n = 0 then 'PASS' else 'FAIL' end);
+  exception when insufficient_privilege then
+    insert into rls_results (who, check_name, result) values ('viewer', 'cannot change skills', 'PASS');
+  end;
+
+  begin
+    insert into public.tasks (name) values ('RLS test task');
+    insert into rls_results (who, check_name, result) values ('viewer', 'cannot add tasks', 'FAIL');
+  exception when insufficient_privilege then
+    insert into rls_results (who, check_name, result) values ('viewer', 'cannot add tasks', 'PASS');
+  end;
 
   update public.profiles set app_role = 'admin' where id = auth.uid();
   get diagnostics n = row_count;
@@ -95,6 +136,18 @@ begin
 
   insert into public.people (name) values ('RLS test person') returning id into pid;
   insert into rls_results (who, check_name, result) values ('admin', 'can add people', case when pid is not null then 'PASS' else 'FAIL' end);
+
+  insert into public.person_skills (person_id, pump_model_id)
+  values (pid, (select id from public.pump_models order by sort_order limit 1));
+  get diagnostics n = row_count;
+  insert into rls_results (who, check_name, result) values ('admin', 'can set skills', case when n = 1 then 'PASS' else 'FAIL' end);
+
+  update public.app_settings set lunch_minutes = lunch_minutes where id = 1;
+  get diagnostics n = row_count;
+  insert into rls_results (who, check_name, result) values ('admin', 'can edit working hours', case when n = 1 then 'PASS' else 'FAIL' end);
+
+  insert into public.pump_models (name, is_trial) values ('RLS test trial unit', true);
+  insert into rls_results (who, check_name, result) values ('admin', 'can add pump models', 'PASS');
 
   insert into public.assignments (person_id, work_date, task_id, qty_target)
   values (pid, current_date, (select id from public.tasks where name = 'Training'), 0);

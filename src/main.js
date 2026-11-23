@@ -6,6 +6,8 @@ import { renderLogin } from './pages/login.js';
 import { renderHome } from './pages/home.js';
 import { renderAccount } from './pages/account.js';
 import { renderComingSoon } from './pages/coming-soon.js';
+import { renderPeople } from './pages/people.js';
+import { renderSettings } from './pages/settings.js';
 
 const app = document.getElementById('app');
 
@@ -14,8 +16,8 @@ const app = document.getElementById('app');
 const routes = {
   '/planner':  { label: 'Planner',        render: renderHome },
   '/demand':   { label: 'Demand & Notes', render: renderComingSoon('Demand & Notes', 4) },
-  '/people':   { label: 'People',         render: renderComingSoon('People', 2) },
-  '/settings': { label: 'Settings',       render: renderComingSoon('Settings (pump models, tasks, working hours)', 2), admin: true },
+  '/people':   { label: 'People',         render: renderPeople },
+  '/settings': { label: 'Settings',       render: renderSettings, admin: true },
   '/account':  { label: 'My account',     render: renderAccount, hidden: true },
 };
 const DEFAULT_ROUTE = '/planner';
