@@ -3,7 +3,7 @@ import { supabase, isConfigured } from './supabase.js';
 import { auth, loadSession, loadProfile, signOut } from './auth.js';
 import { h, mount, hhmm } from './ui.js';
 import { renderLogin } from './pages/login.js';
-import { renderHome } from './pages/home.js';
+import { renderPlanner } from './pages/planner.js';
 import { renderAccount } from './pages/account.js';
 import { renderComingSoon } from './pages/coming-soon.js';
 import { renderPeople } from './pages/people.js';
@@ -14,7 +14,7 @@ const app = document.getElementById('app');
 // Hash routes. `admin: true` hides the page from viewers (RLS still
 // enforces the real permissions in the database).
 const routes = {
-  '/planner':  { label: 'Planner',        render: renderHome },
+  '/planner':  { label: 'Planner',        render: renderPlanner },
   '/demand':   { label: 'Demand & Notes', render: renderComingSoon('Demand & Notes', 4) },
   '/people':   { label: 'People',         render: renderPeople },
   '/settings': { label: 'Settings',       render: renderSettings, admin: true },
@@ -23,7 +23,8 @@ const routes = {
 const DEFAULT_ROUTE = '/planner';
 
 function currentPath() {
-  const path = location.hash.replace(/^#/, '') || DEFAULT_ROUTE;
+  // "#/planner?week=2026-11-23" -> "/planner"
+  const path = location.hash.replace(/^#/, '').split('?')[0] || DEFAULT_ROUTE;
   return routes[path] ? path : DEFAULT_ROUTE;
 }
 

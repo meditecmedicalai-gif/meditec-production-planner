@@ -28,6 +28,16 @@ from pg_class c join pg_namespace n on n.oid = c.relnamespace
 where n.nspname = 'public' and c.relkind = 'r'
 order by c.relname;
 
+insert into rls_results (who, check_name, result)
+select 'setup', 'pump_models.is_trial retired (002 migration run)',
+       case when exists (select 1 from information_schema.columns
+                         where table_schema = 'public' and table_name = 'pump_models' and column_name = 'is_trial')
+            then 'FAIL - run 002_build_types.sql' else 'PASS' end;
+
+insert into rls_results (who, check_name, result)
+select 'setup', 'exactly one default build type',
+       case when (select count(*) from public.build_types where is_default) = 1 then 'PASS' else 'FAIL' end;
+
 -- ---------------------------------------------------------------- viewer
 select set_config('request.jwt.claims',
        json_build_object('sub', id, 'role', 'authenticated')::text, true)
@@ -83,6 +93,20 @@ begin
     insert into rls_results (who, check_name, result) values ('viewer', 'cannot change skills', 'PASS');
   end;
 
+  select count(*) into n from public.build_types;
+  insert into rls_results (who, check_name, result) values ('viewer', 'can read build types', case when n > 0 then 'PASS' else 'FAIL' end);
+
+  begin
+    insert into public.build_types (name) values ('RLS test type');
+    insert into rls_results (who, check_name, result) values ('viewer', 'cannot add build types', 'FAIL');
+  exception when insufficient_privilege then
+    insert into rls_results (who, check_name, result) values ('viewer', 'cannot add build types', 'PASS');
+  end;
+
+  update public.build_types set color = '#000000';
+  get diagnostics n = row_count;
+  insert into rls_results (who, check_name, result) values ('viewer', 'cannot edit build types', case when n = 0 then 'PASS' else 'FAIL' end);
+
   begin
     insert into public.tasks (name) values ('RLS test task');
     insert into rls_results (who, check_name, result) values ('viewer', 'cannot add tasks', 'FAIL');
@@ -98,7 +122,8 @@ begin
   get diagnostics n = row_count;
   insert into rls_results (who, check_name, result) values ('viewer', 'cannot edit working hours', case when n = 0 then 'PASS' else 'FAIL' end);
 
-  insert into public.demand_notes (quantity, comment) values (10, 'RLS test note') returning id into note_id;
+  insert into public.demand_notes (quantity, comment, build_type_id)
+  values (10, 'RLS test note', (select id from public.build_types where name = 'Trial')) returning id into note_id;
   insert into rls_results (who, check_name, result) values ('viewer', 'can create demand note', case when note_id is not null then 'PASS' else 'FAIL' end);
 
   update public.demand_notes set status = 'done' where id = note_id;
@@ -146,7 +171,7 @@ begin
   get diagnostics n = row_count;
   insert into rls_results (who, check_name, result) values ('admin', 'can edit working hours', case when n = 1 then 'PASS' else 'FAIL' end);
 
-  insert into public.pump_models (name, is_trial) values ('RLS test trial unit', true);
+  insert into public.pump_models (name) values ('RLS test pump model');
   insert into rls_results (who, check_name, result) values ('admin', 'can add pump models', 'PASS');
 
   insert into public.assignments (person_id, work_date, task_id, qty_target)
@@ -154,6 +179,28 @@ begin
   select count(*) into n from public.audit_log where table_name = 'assignments' and changed_by = auth.uid()
     and changed_at >= now();
   insert into rls_results (who, check_name, result) values ('admin', 'assignment change written to audit log', case when n >= 1 then 'PASS' else 'FAIL' end);
+
+  -- Build types
+  insert into public.build_types (name, color) values ('RLS test type', '#123456');
+  insert into rls_results (who, check_name, result) values ('admin', 'can add build types', 'PASS');
+  select count(*) into n from public.audit_log where table_name = 'build_types' and changed_at >= now();
+  insert into rls_results (who, check_name, result) values ('admin', 'build type change written to audit log', case when n >= 1 then 'PASS' else 'FAIL' end);
+
+  -- Pump task without a build type gets the default (Production)
+  insert into public.assignments (person_id, work_date, task_id, pump_model_id, qty_target)
+  values (pid, current_date, (select id from public.tasks where requires_pump order by sort_order limit 1),
+          (select id from public.pump_models order by sort_order limit 1), 5);
+  select count(*) into n from public.assignments a join public.build_types b on b.id = a.build_type_id
+  where a.person_id = pid and b.is_default;
+  insert into rls_results (who, check_name, result) values ('admin', 'pump task defaults to default build type', case when n = 1 then 'PASS' else 'FAIL' end);
+
+  begin
+    insert into public.assignments (person_id, work_date, task_id)
+    values (pid, current_date, (select id from public.tasks where requires_pump order by sort_order limit 1));
+    insert into rls_results (who, check_name, result) values ('admin', 'pump task without pump model rejected', 'FAIL');
+  exception when not_null_violation then
+    insert into rls_results (who, check_name, result) values ('admin', 'pump task without pump model rejected', 'PASS');
+  end;
 
   begin
     insert into public.audit_log (table_name, action) values ('x', 'insert');
