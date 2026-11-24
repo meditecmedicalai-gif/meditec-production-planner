@@ -7,15 +7,17 @@ export async function renderSettings(main, ctx) {
   const modelsCard = h('section', { class: 'card' });
   const tasksCard = h('section', { class: 'card' });
   const typesCard = h('section', { class: 'card' });
+  const equipCard = h('section', { class: 'card' });
   mount(main,
     h('h1', { class: 'page-title' }, 'Settings'),
-    h('div', { class: 'stack-lg' }, hoursCard, modelsCard, typesCard, tasksCard),
+    h('div', { class: 'stack-lg' }, hoursCard, modelsCard, typesCard, tasksCard, equipCard),
   );
   await Promise.all([
     renderHours(hoursCard, ctx),
     renderRefList(modelsCard, MODELS),
     renderRefList(typesCard, BUILD_TYPES),
     renderRefList(tasksCard, TASKS),
+    renderRefList(equipCard, EQUIPMENT),
   ]);
 }
 
@@ -92,12 +94,25 @@ const TASKS = {
   title: 'Tasks / operations',
   singular: 'task',
   help: '"Counts as output" tasks are added up as units produced in the weekly summary (normally Final assembly only).',
-  columns: 'id, name, requires_pump, counts_as_output, active, sort_order',
+  columns: 'id, name, requires_pump, counts_as_output, is_background, active, sort_order',
   flags: [
     { key: 'requires_pump', label: 'Requires a pump model', badge: 'needs pump' },
     { key: 'counts_as_output', label: 'Counts as output (units produced)', badge: 'counts as output', accent: true },
+    { key: 'is_background', label: 'Background / unattended (runs while the person does other work, e.g. soak test). Can be overridden per job.', badge: '⏱ background' },
   ],
   extraFields: [],
+};
+
+const EQUIPMENT = {
+  table: 'equipment',
+  title: 'Equipment / test stations',
+  singular: 'equipment item',
+  help: 'Jobs can be linked to one item; the planner warns when the same item is booked at overlapping times.',
+  columns: 'id, name, notes, active, sort_order',
+  flags: [],
+  extraFields: [
+    { key: 'notes', label: 'Notes', hint: 'Optional, e.g. location or capacity', maxlength: 60 },
+  ],
 };
 
 async function renderRefList(card, cfg) {

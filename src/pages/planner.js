@@ -4,6 +4,7 @@ import { auth } from '../auth.js';
 import { demandPanel } from './demand.js';
 import { loadSummaryDemand, summaryCard } from './summary.js';
 import { hhmm } from '../ui.js';
+import { isBackground, coversDay, endDateOf, timeLabel, clashes, overlaps, hm } from '../jobs.js';
 import {
   toISO, fromISO, addDays, mondayOf, today, isoWeek,
   fmtDayShort, fmtDayLong, fmtWeekday, fmtRange, fmtDate,
@@ -31,20 +32,25 @@ const goToWeek = (monday) => { location.hash = `#/planner?week=${toISO(monday)}`
 async function loadWeek(monday) {
   const from = toISO(monday);
   const to = toISO(addDays(monday, 4));
-  const [people, models, tasks, types, skills, assignments, absences] = await Promise.all([
+  const dayBefore = toISO(addDays(monday, -1));
+  const [people, models, tasks, types, skills, assignments, absences, equipment] = await Promise.all([
     supabase.from('people').select('id, name, job_title, active').order('name'),
     supabase.from('pump_models').select('id, name, short_code, active, sort_order').order('sort_order').order('name'),
-    supabase.from('tasks').select('id, name, requires_pump, counts_as_output, active, sort_order').order('sort_order').order('name'),
+    supabase.from('tasks').select('id, name, requires_pump, counts_as_output, is_background, active, sort_order').order('sort_order').order('name'),
     supabase.from('build_types').select('id, name, color, is_default, active, sort_order').order('sort_order').order('name'),
     supabase.from('person_skills').select('person_id, pump_model_id'),
     supabase.from('assignments')
-      .select('id, person_id, work_date, pump_model_id, task_id, build_type_id, qty_target, notes, created_at, updated_at')
-      .gte('work_date', from).lte('work_date', to).order('created_at'),
+      .select(JOB_COLUMNS)
+      // Jobs starting this week, plus ones that started earlier and run into it
+      // (overnight from the day before, or with an end date in this week or later).
+      .lte('work_date', to).or(`work_date.gte.${dayBefore},end_date.gte.${from}`)
+      .order('start_time', { nullsFirst: true }).order('created_at'),
     supabase.from('absences')
       .select('id, person_id, start_date, end_date, absence_type, notes')
       .lte('start_date', to).gte('end_date', from),
+    supabase.from('equipment').select('id, name, notes, active, sort_order').order('sort_order').order('name'),
   ]);
-  const err = [people, models, tasks, types, skills, assignments, absences].find((r) => r.error)?.error;
+  const err = [people, models, tasks, types, skills, assignments, absences, equipment].find((r) => r.error)?.error;
   if (err) return { error: err };
 
   const byId = (rows) => new Map(rows.map((r) => [r.id, r]));
@@ -55,10 +61,15 @@ async function loadWeek(monday) {
     types: types.data, typeById: byId(types.data),
     defaultType: types.data.find((t) => t.is_default) || null,
     skills: new Set(skills.data.map((s) => `${s.person_id}|${s.pump_model_id}`)),
-    assignments: assignments.data,
+    // drop overnight jobs from Sunday that don't actually reach Monday
+    assignments: assignments.data.filter((a) => endDateOf(a) >= from),
     absences: absences.data,
+    equipment: equipment.data, equipmentById: byId(equipment.data),
   };
 }
+
+const JOB_COLUMNS = 'id, person_id, work_date, pump_model_id, task_id, build_type_id, qty_target, notes, '
+  + 'background, start_time, end_time, end_date, equipment_id, created_at, updated_at';
 
 /** Helpers bound to a loaded week. */
 function makeCtx(data) {
@@ -69,6 +80,29 @@ function makeCtx(data) {
     },
     trained(personId, modelId) {
       return data.skills.has(`${personId}|${modelId}`);
+    },
+    isBg(a) {
+      return isBackground(a, data.taskById.get(a.task_id));
+    },
+    /** Jobs covering a day for a person: attended first, then background. */
+    jobsOn(personId, iso) {
+      const jobs = data.assignments.filter((a) => a.person_id === personId && coversDay(a, iso));
+      return {
+        attended: jobs.filter((a) => !this.isBg(a)),
+        background: jobs.filter((a) => this.isBg(a)),
+      };
+    },
+    /** Equipment / person time clashes against the loaded week, as messages. */
+    clashWarnings(a, personById) {
+      const c = clashes(a, data.assignments, data.taskById);
+      const out = [];
+      for (const o of c.equipment) {
+        out.push(`${data.equipmentById.get(a.equipment_id)?.name || 'Equipment'} is also booked for ${personById.get(o.person_id)?.name || 'someone'} (${fmtDayShort(fromISO(o.work_date))}${o.start_time ? ' ' + hm(o.start_time) : ''}).`);
+      }
+      for (const o of c.person) {
+        out.push(`Overlaps another job at ${hm(o.start_time)} (${data.taskById.get(o.task_id)?.name || 'job'}).`);
+      }
+      return out;
     },
     /** Problems with a (proposed) assignment: untrained / absent. */
     warningsFor(a, personName) {
@@ -115,11 +149,15 @@ export async function renderPlanner(main) {
   // ---- one cell (person × day) — used by both the grid and the phone view
   const cell = (person, iso) => {
     const absence = ctx.absenceOn(person.id, iso);
-    const jobs = data.assignments.filter((a) => a.person_id === person.id && a.work_date === iso);
+    const { attended, background } = ctx.jobsOn(person.id, iso);
     return h('div', { class: 'cell-inner' },
       absence ? absenceBanner(absence, person) : null,
-      jobs.map((a) => chip(a, person, absence)),
-      !admin && !absence && !jobs.length ? h('span', { class: 'muted small cell-empty' }, 'Nothing planned') : null,
+      attended.map((a) => chip(a, person, absence, iso)),
+      background.length ? h('div', { class: 'bg-group' },
+        h('span', { class: 'bg-group-label' }, '⏱ Background'),
+        background.map((a) => chip(a, person, absence, iso)),
+      ) : null,
+      !admin && !absence && !attended.length && !background.length ? h('span', { class: 'muted small cell-empty' }, 'Nothing planned') : null,
       admin ? h('div', { class: 'cell-actions' },
         h('button', {
           class: 'btn btn-xs btn-ghost',
@@ -150,18 +188,28 @@ export async function renderPlanner(main) {
     }, label, absence.notes ? h('span', { class: 'absence-note' }, absence.notes) : null);
   };
 
-  const chip = (a, person, absence) => {
+  const chip = (a, person, absence, iso) => {
     const model = data.modelById.get(a.pump_model_id);
     const task = data.taskById.get(a.task_id);
     const type = data.typeById.get(a.build_type_id);
+    const equip = data.equipmentById.get(a.equipment_id);
+    const bg = ctx.isBg(a);
+    const time = timeLabel(a, iso);
+    const continuing = iso !== a.work_date;
     const warnings = ctx.warningsFor(a, person.name);
-    if (absence) warnings.push(`${person.name} is marked ${ABSENCE_TYPES[absence.absence_type] || 'absent'} this day.`);
+    // Absence: attended work is flagged on every absent day; a background
+    // job only on the day it is started (someone has to set it up).
+    if (absence && (!bg || !continuing)) {
+      warnings.push(`${person.name} is marked ${ABSENCE_TYPES[absence.absence_type] || 'absent'} this day.`);
+    }
+    warnings.push(...ctx.clashWarnings(a, personById));
     const label = [model?.name, type?.name, task?.name, a.qty_target != null ? a.qty_target : null].filter((x) => x != null).join(' · ');
     return h('button', {
       type: 'button',
-      class: `chip ${warnings.length ? 'chip-warn' : ''}`,
+      class: `chip ${bg ? 'chip-bg' : ''} ${continuing ? 'chip-cont' : ''} ${warnings.length ? 'chip-warn' : ''}`,
       style: type ? `--type-color:${type.color}` : false,
-      title: [label, a.notes, ...warnings.map((w) => `⚠ ${w}`)].filter(Boolean).join('\n'),
+      title: [label, bg ? 'Background / unattended' : null, time, equip ? `Equipment: ${equip.name}` : null, a.notes,
+        ...warnings.map((w) => `⚠ ${w}`)].filter(Boolean).join('\n'),
       onclick: () => (admin
         ? editAssignment({ ctx, person, iso: a.work_date, assignment: a, isoDays, personById, onSaved: reload })
         : showAssignment(ctx, a, person, warnings)),
@@ -171,9 +219,14 @@ export async function renderPlanner(main) {
         model ? h('span', { class: 'chip-model' }, model.name) : null,
         type ? typeTag(type) : null,
         h('span', { class: 'chip-task' }, task?.name ?? '?'),
-        a.qty_target != null ? h('span', { class: 'chip-qty' }, `× ${a.qty_target}`) : null,
+        a.qty_target != null && !continuing ? h('span', { class: 'chip-qty' }, `× ${a.qty_target}`) : null,
       ),
-      a.notes ? h('span', { class: 'chip-notes' }, a.notes) : null,
+      time || equip || bg ? h('span', { class: 'chip-meta' },
+        bg ? h('span', { class: 'chip-bg-icon', 'aria-label': 'Background job', title: 'Background / unattended' }, '⏱') : null,
+        time ? h('span', { class: 'chip-time' }, time) : null,
+        equip ? h('span', { class: 'equip-tag' }, equip.name) : null,
+      ) : null,
+      a.notes && !continuing ? h('span', { class: 'chip-notes' }, a.notes) : null,
     );
   };
 
@@ -210,7 +263,9 @@ export async function renderPlanner(main) {
     h('span', { class: 'muted small' }, 'Build types:'),
     data.types.filter((t) => t.active).map(typeTag),
     h('span', { class: 'legend-sep', 'aria-hidden': 'true' }),
-    h('span', { class: 'muted small' }, '⚠ = not trained / absent'),
+    h('span', { class: 'muted small' }, '⚠ = not trained / absent / clash'),
+    h('span', { class: 'legend-sep', 'aria-hidden': 'true' }),
+    h('span', { class: 'legend-bg' }, '⏱ background job'),
   );
 
   // ---- desktop grid
@@ -280,6 +335,9 @@ function showAssignment(ctx, a, person, warnings) {
         h('dt', {}, 'Pump model'), h('dd', {}, model?.name ?? '—'),
         h('dt', {}, 'Build type'), h('dd', {}, type ? typeTag(type) : '—'),
         h('dt', {}, 'Quantity'), h('dd', {}, a.qty_target ?? '—'),
+        h('dt', {}, 'Time'), h('dd', {}, timeLabel(a, a.work_date) || 'All day'),
+        h('dt', {}, 'Runs'), h('dd', {}, ctx.isBg(a) ? '⏱ In the background (unattended)' : 'Attended'),
+        h('dt', {}, 'Equipment'), h('dd', {}, ctx.equipmentById.get(a.equipment_id)?.name ?? '—'),
         h('dt', {}, 'Notes'), h('dd', { class: 'pre' }, a.notes || '—'),
       ),
       warnings.map((w) => h('p', { class: 'warn-box' }, `⚠ ${w}`)),
@@ -312,6 +370,26 @@ function editAssignment({ ctx, person, iso, assignment, isoDays, personById, onS
   const typeSel = h('select', {}, options(ctx.types, src?.build_type_id ?? ctx.defaultType?.id, { blank: '— none —' }));
   const qty = h('input', { type: 'number', min: 0, step: 1, inputmode: 'numeric', value: src?.qty_target ?? '' });
   const notes = h('textarea', { rows: 2, maxlength: 500 }, src?.notes ?? '');
+  const startTime = h('input', { type: 'time', step: 300, value: hm(src?.start_time) ?? '' });
+  const endTime = h('input', { type: 'time', step: 300, value: hm(src?.end_time) ?? '' });
+  // Duplicates keep the same length (end date moves with the new start day).
+  const spanDays = src?.end_date ? Math.round((fromISO(src.end_date) - fromISO(src.work_date || iso)) / 86400000) : null;
+  const endDate = h('input', { type: 'date', value: assignment?.end_date ?? '' });
+  const bgSel = h('select', {});
+  let bgInit = false;
+  const setBgOptions = () => {
+    const task = ctx.taskById.get(taskSel.value);
+    // First time: the saved value; afterwards: whatever is selected now.
+    const cur = bgInit ? bgSel.value : (src?.background == null ? '' : String(src.background));
+    bgInit = true;
+    mount(bgSel,
+      h('option', { value: '' }, `Task default (${task?.is_background ? 'background' : 'attended'})`),
+      h('option', { value: 'true' }, '⏱ Background / unattended'),
+      h('option', { value: 'false' }, 'Attended'));
+    bgSel.value = cur;
+  };
+  const equipSel = h('select', {}, options(ctx.equipment, src?.equipment_id, { blank: '— none —' }));
+  const timeHint = h('p', { class: 'muted small time-hint' });
   const warnBox = h('div', { class: 'stack-sm', 'aria-live': 'polite' });
   const error = h('p', { class: 'form-error', role: 'alert' });
 
@@ -325,7 +403,21 @@ function editAssignment({ ctx, person, iso, assignment, isoDays, personById, onS
   const modelField = field('Pump model', modelSel);
   const typeField = field('Build type', typeSel);
 
+  /** The job(s) as they would be saved, for warnings. */
+  const proposed = () => selectedDates().filter(Boolean).map((d) => ({
+    id: assignment?.id, person_id: personSel.value, task_id: taskSel.value, work_date: d,
+    start_time: startTime.value || null, end_time: endTime.value || null,
+    end_date: isNew ? (spanDays != null && !endDate.value ? toISO(addDays(fromISO(d), spanDays)) : endDate.value || null) : endDate.value || null,
+    equipment_id: equipSel.value || null,
+    background: bgSel.value === '' ? null : bgSel.value === 'true',
+  }));
+
   const refresh = () => {
+    setBgOptions();
+    const first = proposed()[0];
+    timeHint.textContent = first && (first.start_time || first.end_date)
+      ? `Shows as: ${timeLabel(first, first.work_date)}${endDateOf(first) !== first.work_date ? ' (and on each following day it covers)' : ''}`
+      : 'No times = all day.';
     const task = ctx.taskById.get(taskSel.value);
     const needsPump = task ? task.requires_pump : true;
     modelField.querySelector('label').textContent = needsPump ? 'Pump model' : 'Pump model (optional)';
@@ -341,11 +433,15 @@ function editAssignment({ ctx, person, iso, assignment, isoDays, personById, onS
         const ab = ctx.absenceOn(p.id, d);
         if (ab) msgs.push(`${p.name} is marked ${ABSENCE_TYPES[ab.absence_type] || 'absent'} on ${fmtDayLong(fromISO(d))}.`);
       }
+      for (const job of proposed()) {
+        if (!job.task_id) continue;
+        for (const m of ctx.clashWarnings(job, personById)) if (!msgs.includes(m)) msgs.push(m);
+      }
     }
     mount(warnBox, msgs.map((m) => h('p', { class: 'warn-box' }, `⚠ ${m}`)));
     return msgs;
   };
-  for (const el of [personSel, taskSel, modelSel, dateInput, ...(dayBoxes || []).map((b) => b.input)]) {
+  for (const el of [personSel, taskSel, modelSel, dateInput, startTime, endTime, endDate, bgSel, equipSel, ...(dayBoxes || []).map((b) => b.input)]) {
     el?.addEventListener('change', refresh);
   }
 
@@ -360,8 +456,27 @@ function editAssignment({ ctx, person, iso, assignment, isoDays, personById, onS
     if (qty.value !== '' && (!Number.isInteger(Number(qty.value)) || Number(qty.value) < 0)) {
       error.textContent = 'Quantity must be a whole number (0 or more).'; return false;
     }
+    if (endTime.value && !startTime.value) { error.textContent = 'Add a start time (or clear the end time).'; return false; }
+    if (endDate.value && endDate.value < dates[0]) { error.textContent = 'The end date is before the start date.'; return false; }
+    if (endDate.value && dates.length > 1) { error.textContent = 'With an end date, tick only the start day.'; return false; }
 
     const warnings = refresh();
+    // Equipment bookings outside the loaded week (e.g. long jobs).
+    if (equipSel.value) {
+      const jobs = proposed();
+      const minStart = jobs.map((j) => j.work_date).sort()[0];
+      const maxEnd = jobs.map(endDateOf).sort().at(-1);
+      const { data: booked } = await supabase.from('assignments').select(JOB_COLUMNS)
+        .eq('equipment_id', equipSel.value).lte('work_date', maxEnd)
+        .or(`work_date.gte.${toISO(addDays(fromISO(minStart), -1))},end_date.gte.${minStart}`);
+      const known = new Set(ctx.assignments.map((x) => x.id));
+      for (const o of booked || []) {
+        if (known.has(o.id) || o.id === assignment?.id) continue;
+        if (jobs.some((j) => overlaps(j, o))) {
+          warnings.push(`${ctx.equipmentById.get(equipSel.value)?.name} is also booked for ${personById.get(o.person_id)?.name || 'someone'} (${fmtDayShort(fromISO(o.work_date))}${o.start_time ? ' ' + hm(o.start_time) : ''}).`);
+        }
+      }
+    }
     if (warnings.length) {
       const ok = await confirmDialog('Save anyway?', warnings.join(' '), 'Save anyway', 'primary');
       if (!ok) return false;
@@ -374,10 +489,15 @@ function editAssignment({ ctx, person, iso, assignment, isoDays, personById, onS
       build_type_id: typeSel.value || null,
       qty_target: qty.value === '' ? null : Number(qty.value),
       notes: notes.value.trim() || null,
+      start_time: startTime.value || null,
+      end_time: endTime.value || null,
+      background: bgSel.value === '' ? null : bgSel.value === 'true',
+      equipment_id: equipSel.value || null,
     };
+    const rowsToSave = proposed().map((j) => ({ ...values, work_date: j.work_date, end_date: j.end_date }));
     const { error: err } = isNew
-      ? await supabase.from('assignments').insert(dates.map((d) => ({ ...values, work_date: d })))
-      : await supabase.from('assignments').update({ ...values, work_date: dates[0] }).eq('id', assignment.id);
+      ? await supabase.from('assignments').insert(rowsToSave)
+      : await supabase.from('assignments').update(rowsToSave[0]).eq('id', assignment.id);
     if (reportError(err, 'Saving')) return false;
     toast(isNew && dates.length > 1 ? `Added to ${dates.length} days.` : 'Saved.', 'success');
     onSaved();
@@ -408,6 +528,10 @@ function editAssignment({ ctx, person, iso, assignment, isoDays, personById, onS
           copyFrom: {
             task_id: taskSel.value, pump_model_id: modelSel.value, build_type_id: typeSel.value,
             qty_target: qty.value === '' ? null : Number(qty.value), notes: notes.value,
+            start_time: startTime.value || null, end_time: endTime.value || null,
+            background: bgSel.value === '' ? null : bgSel.value === 'true',
+            equipment_id: equipSel.value || null,
+            work_date: dateInput.value, end_date: endDate.value || null,
           },
         }), 0);
         return true;
@@ -430,6 +554,19 @@ function editAssignment({ ctx, person, iso, assignment, isoDays, personById, onS
       field('Task / operation', taskSel),
       h('div', { class: 'form-grid form-grid-2' }, modelField, typeField),
       field('Quantity target', qty, 'Units to complete (optional).'),
+      h('fieldset', { class: 'skills-fieldset' },
+        h('legend', {}, 'Timing & equipment (optional)'),
+        h('div', { class: 'form-grid form-grid-3' },
+          field('Start time', startTime),
+          field('End time', endTime, 'Earlier than start = next day'),
+          field('Ends on', endDate, 'Only for jobs over several days'),
+        ),
+        timeHint,
+        h('div', { class: 'form-grid form-grid-2' },
+          field('Runs', bgSel),
+          field('Equipment / test station', equipSel),
+        ),
+      ),
       field('Notes', notes),
       warnBox,
       error,
@@ -514,7 +651,7 @@ async function copyLastWeek({ ctx, monday, isoDays, rows, onDone }) {
   const prevFrom = toISO(addDays(monday, -7));
   const prevTo = toISO(addDays(monday, -3));
   const { data: prev, error } = await supabase.from('assignments')
-    .select('person_id, work_date, pump_model_id, task_id, build_type_id, qty_target, notes')
+    .select('person_id, work_date, pump_model_id, task_id, build_type_id, qty_target, notes, background, start_time, end_time, end_date, equipment_id')
     .gte('work_date', prevFrom).lte('work_date', prevTo).order('created_at');
   if (reportError(error, 'Loading last week')) return;
   if (!prev.length) { toast('Last week has nothing planned to copy.'); return; }
@@ -527,16 +664,17 @@ async function copyLastWeek({ ctx, monday, isoDays, rows, onDone }) {
   for (const a of prev) {
     const date = toISO(addDays(fromISO(a.work_date), 7));
     if (!activePerson.has(a.person_id) || !isActive(ctx.modelById, a.pump_model_id)
-        || !isActive(ctx.taskById, a.task_id) || !isActive(ctx.typeById, a.build_type_id)) { skippedInactive++; continue; }
+        || !isActive(ctx.taskById, a.task_id) || !isActive(ctx.typeById, a.build_type_id)
+        || !isActive(ctx.equipmentById, a.equipment_id)) { skippedInactive++; continue; }
     if (ctx.absenceOn(a.person_id, date)) { skippedAbsent++; continue; }
-    copies.push({ ...a, work_date: date });
+    copies.push({ ...a, work_date: date, end_date: a.end_date ? toISO(addDays(fromISO(a.end_date), 7)) : null });
   }
 
-  const existing = ctx.assignments.length;
+  const existing = ctx.assignments.filter((a) => a.work_date >= toISO(monday)).length;
   const parts = [`Copy ${copies.length} job${copies.length === 1 ? '' : 's'} from last week into this week (same people, days and quantities).`];
   if (existing) parts.push(`This week already has ${existing} job${existing === 1 ? '' : 's'}; the copies are added alongside them.`);
   if (skippedAbsent) parts.push(`${skippedAbsent} skipped because the person is absent.`);
-  if (skippedInactive) parts.push(`${skippedInactive} skipped because a person, pump model, task or build type is inactive.`);
+  if (skippedInactive) parts.push(`${skippedInactive} skipped because a person, pump model, task, build type or equipment is inactive.`);
   if (!copies.length) { toast(parts.slice(1).join(' ') || 'Nothing to copy.'); return; }
 
   if (!(await confirmDialog('Copy last week?', parts.join(' '), 'Copy', 'primary'))) return;
