@@ -6,6 +6,8 @@ import { endDateOf, timeLabel, overlaps, hm, ABSENCE_TYPES } from '../jobs.js';
 import { capacityForDay, isTestingJob, stationMismatch } from '../capacity.js';
 import { PATTERNS, describe as describeRepeat, isoDow, JOB_FIELDS, pick } from '../recurring.js';
 import { toISO, fromISO, addDays, today, fmtDayShort, fmtDayLong } from '../dates.js';
+import { placeOn, fmtMin } from '../daytime.js';
+import { miniDay } from './dayTimeline.js';
 
 const ANY = '__any';
 const WEEKDAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
@@ -121,14 +123,14 @@ async function loadTemplate(ctx, id) {
 }
 
 // ------------------------------------------------------------------ job form
-export function editAssignment({ ctx, person, iso, assignment, isoDays, personById, onSaved, copyFrom }) {
-  const src = assignment || copyFrom || null;
+export function editAssignment({ ctx, person, iso, assignment, isoDays, personById, onSaved, copyFrom, times }) {
+  const src = assignment || copyFrom || (times ? { start_time: times.start, end_time: times.end } : null);
   const isNew = !assignment;
   const activePeople = [...personById.values()].filter((p) => p.active || p.id === person?.id);
 
   const personSel = h('select', {}, options(activePeople, person?.id),
     isNew ? h('option', { value: '' }, '— Not assigned yet (recurring only) —') : null);
-  const taskSel = h('select', {}, options(ctx.tasks, src?.task_id, { blank: src ? null : '— choose a task —' }));
+  const taskSel = h('select', {}, options(ctx.tasks, src?.task_id, { blank: src?.task_id ? null : '— choose a task —' }));
   const pumps = pumpFields(ctx, src, taskSel);
   const typeSel = h('select', {}, options(ctx.types, src?.build_type_id ?? ctx.defaultType?.id, { blank: '— none —' }));
   const qty = h('input', { type: 'number', min: 0, step: 1, inputmode: 'numeric', value: src?.qty_target ?? '' });
@@ -151,6 +153,7 @@ export function editAssignment({ ctx, person, iso, assignment, isoDays, personBy
   };
   const equipSel = h('select', {}, options(ctx.equipment, src?.equipment_id, { blank: '— none —' }));
   const timeHint = h('p', { class: 'muted small time-hint' });
+  const miniBox = h('div', { class: 'mini-box', 'aria-live': 'polite' });
   const warnBox = h('div', { class: 'stack-sm', 'aria-live': 'polite' });
   const error = h('p', { class: 'form-error', role: 'alert' });
 
@@ -203,6 +206,7 @@ export function editAssignment({ ctx, person, iso, assignment, isoDays, personBy
     if (repeat) repeat.setDefaultDays(selectedDates().map(isoDow));
 
     const p = personById.get(personSel.value);
+    renderMini(p, first);
     const msgs = [];
     if (p) {
       msgs.push(...ctx.warningsFor({ person_id: p.id, task_id: taskSel.value, ...pumps.values() }, p.name));
@@ -221,11 +225,31 @@ export function editAssignment({ ctx, person, iso, assignment, isoDays, personBy
     mount(warnBox, msgs.map((m) => h('p', { class: 'warn-box' }, `⚠ ${m}`)));
     return msgs;
   };
+  /** The person's day as a mini timeline, with this job on it. */
+  function renderMini(p, job) {
+    if (!p || !job || !ctx.dayOf) { mount(miniBox); return; }
+    const d = job.work_date;
+    const { attended, background } = ctx.jobsOn(p.id, d);
+    const others = [...attended, ...background].filter((x) => x.id !== assignment?.id);
+    const task = ctx.taskById.get(taskSel.value);
+    const bg = bgSel.value === '' ? Boolean(task?.is_background) : bgSel.value === 'true';
+    const proposedSpan = job.start_time ? placeOn(job, d) : null;
+    mount(miniBox,
+      h('div', { class: 'mini-head' }, h('b', {}, `${p.name.split(' ')[0]}’s day`), ` · ${fmtDayShort(fromISO(d))}`,
+        !job.start_time ? h('span', { class: 'muted small' }, ' · set a start time to place this job') : null),
+      miniDay({
+        ctx, jobs: others, iso: d, hours: ctx.hours, absent: ctx.absenceOn(p.id, d),
+        proposed: proposedSpan ? { ...proposedSpan, bg } : null,
+        onPick: (s, e) => { startTime.value = fmtMin(s); endTime.value = fmtMin(e); refresh(); },
+      }));
+  }
   for (const el of [personSel, taskSel, pumps.modelSel, typeSel, qty, dateInput, startTime, endTime, endDate, bgSel, equipSel,
     ...(dayBoxes || []).map((b) => b.input), repeat?.patternSel]) {
     el?.addEventListener('change', refresh);
   }
   qty.addEventListener('input', refresh);
+  startTime.addEventListener('input', refresh);
+  endTime.addEventListener('input', refresh);
 
   const save = async () => {
     error.textContent = '';
@@ -374,6 +398,7 @@ export function editAssignment({ ctx, person, iso, assignment, isoDays, personBy
         h('div', { class: 'form-grid form-grid-3' },
           field('Start time', startTime), field('End time', endTime, 'Earlier than start = next day'), field('Ends on', endDate, 'Only for jobs over several days')),
         timeHint,
+        miniBox,
         h('div', { class: 'form-grid form-grid-2' }, field('Runs', bgSel), field('Equipment / test station', equipSel)),
       ),
       repeat ? h('fieldset', { class: 'skills-fieldset' }, h('legend', {}, '🔁 Repeat'), repeat.el) : null,

@@ -7,6 +7,8 @@ import { isBackground, coversDay, endDateOf, timeLabel, clashes, hm, pumpLabel, 
 import { capacityConfig, capacityForDay, level, stationMismatch } from '../capacity.js';
 import { describe as describeRepeat, matches as repeatMatches } from '../recurring.js';
 import { editAssignment, editTemplate, deleteTemplate, saveTemplateTimes } from './jobEditor.js';
+import { personDay, placeOn, isTimed, DEFAULT_HOURS, fmtMin } from '../daytime.js';
+import { dayTimeline, dayBar } from './dayTimeline.js';
 import {
   toISO, fromISO, addDays, mondayOf, today, isoWeek,
   fmtDayShort, fmtDayLong, fmtWeekday, fmtRange, fmtDate,
@@ -17,15 +19,36 @@ export { ABSENCE_TYPES };
 let mobileDay = null;       // selected day index on narrow screens
 let extendedOn = null;      // date recurring jobs were last extended (admins, once a day)
 let recurringOpen = null;   // recurring panel open/closed (null = automatic)
+let nowTimer = null;        // Day timeline "now" line
+window.addEventListener('hashchange', () => { clearInterval(nowTimer); nowTimer = null; });
 
 // ------------------------------------------------------------------ routing
+const ISO_RE = /^\d{4}-\d{2}-\d{2}$/;
+const hashParams = () => new URLSearchParams(location.hash.split('?')[1] || '');
 function weekFromHash() {
-  const q = new URLSearchParams(location.hash.split('?')[1] || '');
-  const w = q.get('week');
-  const d = w && /^\d{4}-\d{2}-\d{2}$/.test(w) ? fromISO(w) : today();
+  const q = hashParams();
+  const w = q.get('day') || q.get('week');
+  const d = w && ISO_RE.test(w) ? fromISO(w) : today();
   return mondayOf(d);
 }
-const goToWeek = (monday) => { location.hash = `#/planner?week=${toISO(monday)}`; };
+/** "week" | "day" and the chosen day (Day timeline). */
+function viewFromHash(isoDays, todayISO) {
+  const q = hashParams();
+  const view = q.get('view') === 'day' ? 'day' : 'week';
+  const d = q.get('day');
+  const day = d && isoDays.includes(d) ? d : isoDays.includes(todayISO) ? todayISO : isoDays[0];
+  return { view, day };
+}
+const planHash = ({ week, view, day }) => (view === 'day' ? `#/planner?view=day&day=${day}` : `#/planner?week=${toISO(week)}`);
+const goToWeek = (monday, view = 'week', dayIdx = 0) => {
+  location.hash = planHash({ week: monday, view, day: toISO(addDays(monday, dayIdx)) });
+};
+/** Next / previous working day (Mon–Fri). */
+function stepWorkday(iso, dir) {
+  let d = addDays(fromISO(iso), dir);
+  while (d.getDay() === 0 || d.getDay() === 6) d = addDays(d, dir);
+  return toISO(d);
+}
 
 // ------------------------------------------------------------------ data
 export const JOB_COLUMNS = 'id, person_id, work_date, pump_model_id, any_pump, pump_mix, task_id, build_type_id, qty_target, notes, '
@@ -53,6 +76,7 @@ export async function loadWeek(monday) {
     limitModels: supabase.from('test_limit_models').select('test_limit_id, pump_model_id'),
     shared: supabase.from('test_area_shared_tasks').select('test_area_id, task_id'),
     recurring: supabase.from('recurring_jobs').select('*').eq('active', true).order('created_at'),
+    hours: supabase.from('app_settings').select('work_start, work_end, break_time, break_minutes, lunch_time, lunch_minutes').eq('id', 1).maybeSingle(),
   };
   const keys = Object.keys(q);
   const res = await Promise.all(Object.values(q));
@@ -74,6 +98,7 @@ export async function loadWeek(monday) {
     equipment: r.equipment, equipmentById: byId(r.equipment),
     recurring: r.recurring, recurringById: byId(r.recurring),
     areas: r.areas,
+    hours: r.hours || DEFAULT_HOURS,
     capacity: capacityConfig({
       areas: r.areas, limits: r.limits, limitModels: r.limitModels, sharedTasks: r.shared,
       models: r.models, tasks: r.tasks, equipment: r.equipment,
@@ -84,6 +109,9 @@ export async function loadWeek(monday) {
 /** Helpers bound to a loaded week. */
 export function makeCtx(data) {
   const capCache = new Map();
+  const dayCache = new Map();
+  // order inside a day: by start time; jobs without a time last
+  const startKey = (a, iso) => (isTimed(a) ? placeOn(a, iso).s : Infinity);
   return {
     ...data,
     absenceOn(personId, iso) {
@@ -100,8 +128,18 @@ export function makeCtx(data) {
     },
     /** Jobs covering a day for a person: attended first, then background. */
     jobsOn(personId, iso) {
-      const jobs = data.assignments.filter((a) => a.person_id === personId && coversDay(a, iso));
+      const jobs = data.assignments.filter((a) => a.person_id === personId && coversDay(a, iso))
+        .map((a) => [a, startKey(a, iso)]).sort((x, y) => x[1] - y[1]).map(([a]) => a);
       return { attended: jobs.filter((a) => !this.isBg(a)), background: jobs.filter((a) => this.isBg(a)) };
+    },
+    /** Busy / free / break time for a person on a day (cached). */
+    dayOf(personId, iso) {
+      const key = `${personId}|${iso}`;
+      if (!dayCache.has(key)) {
+        const { attended, background } = this.jobsOn(personId, iso);
+        dayCache.set(key, personDay({ jobs: [...attended, ...background], iso, isBg: (a) => this.isBg(a), hours: data.hours, absent: this.absenceOn(personId, iso) }));
+      }
+      return dayCache.get(key);
     },
     /** Test capacity for a day (cached). */
     capDay(iso) {
@@ -154,14 +192,15 @@ export async function renderPlanner(main) {
     const { error } = await supabase.rpc('extend_recurring_jobs');
     if (!error) extendedOn = todayISO;
   }
-  const [data, panel, summaryDemand, hoursRes] = await Promise.all([
+  const [data, panel, summaryDemand] = await Promise.all([
     loadWeek(monday),
     demandPanel(monday, () => renderPlanner(main)),
     loadSummaryDemand(),
-    supabase.from('app_settings').select('work_start, work_end, break_time, lunch_time').eq('id', 1).maybeSingle(),
   ]);
   if (reportError(data.error || summaryDemand.error, 'Loading the planner')) return;
-  const hours = hoursRes.data;
+  const hours = data.hours;
+  const { view, day: viewDay } = viewFromHash(isoDays, todayISO);
+  const dayIdx = isoDays.indexOf(viewDay);
   const ctx = makeCtx(data);
   const reload = () => renderPlanner(main);
 
@@ -170,6 +209,19 @@ export async function renderPlanner(main) {
   const rows = data.people.filter((p) => p.active || busy.has(p.id));
   const personById = new Map(data.people.map((p) => [p.id, p]));
   const edit = (opts) => editAssignment({ ctx, isoDays, personById, onSaved: reload, ...opts });
+  const openJob = (a, person) => (admin ? edit({ person, iso: a.work_date, assignment: a }) : showAssignment(ctx, a, person, warningsOf(a, person, a.work_date)));
+
+  /** All warnings for a job on a day (chips and the Day timeline). */
+  const warningsOf = (a, person, iso) => {
+    const absence = ctx.absenceOn(person.id, iso);
+    const warnings = ctx.warningsFor(a, person.name);
+    // Absence: attended work is flagged on every absent day; a background job
+    // only on the day it starts (someone has to set it up).
+    if (absence && (!ctx.isBg(a) || iso === a.work_date)) warnings.push(`${person.name} is marked ${ABSENCE_TYPES[absence.absence_type] || 'absent'} this day.`);
+    warnings.push(...ctx.clashWarnings(a, personById));
+    warnings.push(...(ctx.capDay(iso).jobMsgs.get(a.id) || []).map((m) => `Test capacity — ${m}`));
+    return warnings;
+  };
 
   // ---- recurring occurrences skipped because the person is absent
   const skippedOn = (person, iso) => data.recurring
@@ -191,6 +243,7 @@ export async function renderPlanner(main) {
         background.map((a) => chip(a, person, absence, iso)),
       ) : null,
       !admin && !absence && !attended.length && !background.length ? h('span', { class: 'muted small cell-empty' }, 'Nothing planned') : null,
+      dayBar(ctx.dayOf(person.id, iso)),
       admin ? h('div', { class: 'cell-actions' },
         h('button', {
           class: 'btn btn-xs btn-ghost',
@@ -224,12 +277,7 @@ export async function renderPlanner(main) {
     const bg = ctx.isBg(a);
     const time = timeLabel(a, iso);
     const continuing = iso !== a.work_date;
-    const warnings = ctx.warningsFor(a, person.name);
-    // Absence: attended work is flagged on every absent day; a background job
-    // only on the day it starts (someone has to set it up).
-    if (absence && (!bg || !continuing)) warnings.push(`${person.name} is marked ${ABSENCE_TYPES[absence.absence_type] || 'absent'} this day.`);
-    warnings.push(...ctx.clashWarnings(a, personById));
-    warnings.push(...(ctx.capDay(iso).jobMsgs.get(a.id) || []).map((m) => `Test capacity — ${m}`));
+    const warnings = warningsOf(a, person, iso);
     const label = [pump, type?.name, task?.name, a.qty_target != null ? a.qty_target : null].filter((x) => x != null).join(' · ');
     return h('button', {
       type: 'button',
@@ -238,9 +286,10 @@ export async function renderPlanner(main) {
       title: [label, bg ? 'Runs in the background (unattended)' : 'Attended — the person works on this', time,
         equip ? `Equipment: ${equip.name}` : null, a.recurring_id ? 'Recurring job' : null, a.notes,
         ...warnings.map((w) => `⚠ ${w}`)].filter(Boolean).join('\n'),
-      onclick: () => (admin ? edit({ person, iso: a.work_date, assignment: a }) : showAssignment(ctx, a, person, warnings)),
+      onclick: () => openJob(a, person),
     },
       bg ? h('span', { class: 'bg-badge' }, h('span', { 'aria-hidden': 'true' }, '⏱'), ' Background') : null,
+      time ? h('b', { class: 'chip-time chip-when' }, time) : null,
       h('span', { class: 'chip-line' },
         warnings.length ? h('span', { class: 'chip-warn-icon', 'aria-label': 'Warning' }, '!') : null,
         a.recurring_id ? h('span', { class: 'chip-repeat', 'aria-label': 'Recurring job', title: 'Recurring job' }, '🔁') : null,
@@ -249,10 +298,7 @@ export async function renderPlanner(main) {
         h('span', { class: 'chip-task' }, task?.name ?? '?'),
         a.qty_target != null && !continuing ? h('span', { class: 'chip-qty' }, `× ${a.qty_target}`) : null,
       ),
-      time || equip ? h('span', { class: 'chip-meta' },
-        time ? h('span', { class: 'chip-time' }, time) : null,
-        equip ? h('span', { class: 'equip-tag' }, equip.name) : null,
-      ) : null,
+      equip ? h('span', { class: 'chip-meta' }, h('span', { class: 'equip-tag' }, equip.name)) : null,
       a.notes && !continuing ? h('span', { class: 'chip-notes' }, a.notes) : null,
     );
   };
@@ -260,7 +306,8 @@ export async function renderPlanner(main) {
   // ---- test capacity per day
   const capPills = (iso) => {
     const c = ctx.capDay(iso);
-    const pills = c.areas.map((a) => {
+    // The first (main) area is always shown; other areas only when something is booked on them.
+    const pills = c.areas.filter((a, i) => i === 0 || a.peak > 0).map((a) => {
       const lv = level(a.peak, a.max);
       return h('span', {
         class: `cap-pill cap-${lv}`,
@@ -281,23 +328,27 @@ export async function renderPlanner(main) {
   const isThisWeek = toISO(mondayOf(today())) === toISO(monday);
   const toolbar = h('div', { class: 'planner-toolbar' },
     h('div', { class: 'week-nav' },
-      h('button', { class: 'btn btn-sm', 'aria-label': 'Previous week', onclick: () => goToWeek(addDays(monday, -7)) }, '‹ Prev'),
-      h('button', { class: 'btn btn-sm', disabled: isThisWeek, onclick: () => goToWeek(mondayOf(today())) }, 'This week'),
-      h('button', { class: 'btn btn-sm', 'aria-label': 'Next week', onclick: () => goToWeek(addDays(monday, 7)) }, 'Next ›'),
+      h('button', { class: 'btn btn-sm', 'aria-label': 'Previous week', onclick: () => goToWeek(addDays(monday, -7), view, dayIdx) }, '‹ Prev'),
+      h('button', { class: 'btn btn-sm', disabled: isThisWeek, onclick: () => (view === 'day' ? (location.hash = planHash({ view, day: today().getDay() % 6 ? todayISO : toISO(mondayOf(today())) })) : goToWeek(mondayOf(today()))) }, 'This week'),
+      h('button', { class: 'btn btn-sm', 'aria-label': 'Next week', onclick: () => goToWeek(addDays(monday, 7), view, dayIdx) }, 'Next ›'),
       h('h2', { class: 'week-label' }, weekLabel),
     ),
+    h('div', { class: 'seg view-toggle', role: 'group', 'aria-label': 'View' },
+      h('a', { class: `seg-btn ${view === 'week' ? 'active' : ''}`, href: planHash({ week: monday, view: 'week' }), 'aria-current': view === 'week' ? 'true' : false }, 'Week'),
+      h('a', { class: `seg-btn ${view === 'day' ? 'active' : ''}`, href: planHash({ view: 'day', day: viewDay }), 'aria-current': view === 'day' ? 'true' : false }, 'Day timeline'),
+    ),
     h('div', { class: 'planner-actions' },
-      h('button', { class: 'btn btn-sm', onclick: () => document.getElementById('weekly-summary')?.scrollIntoView({ behavior: 'smooth' }) }, 'Summary ↓'),
-      h('button', { class: 'btn btn-sm', title: 'Print this week on A4 landscape', onclick: () => window.print() }, 'Print'),
-      admin ? h('button', { class: 'btn btn-sm', onclick: () => copyLastWeek({ ctx, monday, rows, onDone: reload }) }, 'Copy last week') : null,
+      view === 'week' ? h('button', { class: 'btn btn-sm', onclick: () => document.getElementById('weekly-summary')?.scrollIntoView({ behavior: 'smooth' }) }, 'Summary ↓') : null,
+      h('button', { class: 'btn btn-sm', title: `Print this ${view === 'day' ? 'day' : 'week'} on A4 landscape`, onclick: () => window.print() }, 'Print'),
+      admin && view === 'week' ? h('button', { class: 'btn btn-sm', onclick: () => copyLastWeek({ ctx, monday, rows, onDone: reload }) }, 'Copy last week') : null,
     ),
   );
 
   const printHeader = h('div', { class: 'print-only print-header' },
     h('div', {},
-      h('div', { class: 'print-title' }, `Pump Room Plan — ${weekLabel}`),
+      h('div', { class: 'print-title' }, view === 'day' ? `Pump Room Day Plan — ${fmtDayLong(fromISO(viewDay))}` : `Pump Room Plan — ${weekLabel}`),
       hours ? h('div', { class: 'print-sub' },
-        `Hours ${hhmm(hours.work_start)}–${hhmm(hours.work_end)} · Break ${hhmm(hours.break_time)} · Lunch ${hhmm(hours.lunch_time)}`) : null,
+        `Hours ${hhmm(hours.work_start)}–${hhmm(hours.work_end)} · Break ${hhmm(hours.break_time)} · Lunch ${hhmm(hours.lunch_time)}${view === 'day' ? ' · green = free time' : ''}`) : null,
     ),
     h('div', { class: 'print-sub print-right' }, 'Meditec Medical Ltd', h('br'),
       `Printed ${fmtDate(new Date())} by ${auth.profile?.full_name || auth.profile?.email || ''}`),
@@ -355,6 +406,17 @@ export async function renderPlanner(main) {
       : h('div', { class: 'empty' }, 'No team members yet.'),
   );
 
+  if (view === 'day') {
+    mount(main,
+      printHeader,
+      h('div', { class: 'page-head no-print' }, h('h1', { class: 'page-title' }, 'Day timeline')),
+      toolbar,
+      panel,
+      recurringPanel(ctx, personById, reload),
+      dayView({ ctx, rows, iso: viewDay, isoDays, days, todayISO, admin, hasAreas, capPills, openJob, warningsOf, edit }),
+    );
+    return;
+  }
   mount(main,
     printHeader,
     h('div', { class: 'page-head no-print' }, h('h1', { class: 'page-title' }, 'Week planner')),
@@ -366,6 +428,54 @@ export async function renderPlanner(main) {
     phone,
     summaryCard({ monday, data: ctx, notes: summaryDemand.notes, weekLabel }),
   );
+}
+
+// ------------------------------------------------------------------ Day timeline view
+function dayView({ ctx, rows, iso, isoDays, days, todayISO, admin, hasAreas, capPills, openJob, warningsOf, edit }) {
+  const isToday = iso === todayISO;
+  const go = (d) => { location.hash = planHash({ view: 'day', day: d }); };
+  const nav = h('div', { class: 'day-nav' },
+    h('button', { class: 'btn btn-sm', 'aria-label': 'Previous day', onclick: () => go(stepWorkday(iso, -1)) }, '‹'),
+    h('div', { class: 'day-tabs day-tabs-inline', role: 'tablist' }, days.map((d, i) => h('button', {
+      role: 'tab', 'aria-selected': String(isoDays[i] === iso),
+      class: `day-tab ${isoDays[i] === iso ? 'active' : ''} ${isoDays[i] === todayISO ? 'is-today' : ''}`,
+      onclick: () => go(isoDays[i]),
+    }, h('span', {}, fmtWeekday(d)), h('span', { class: 'day-num' }, d.getDate())))),
+    h('button', { class: 'btn btn-sm', 'aria-label': 'Next day', onclick: () => go(stepWorkday(iso, 1)) }, '›'),
+    h('h2', { class: 'week-label' }, fmtDayLong(fromISO(iso))),
+    isoDays.includes(todayISO) && !isToday ? h('button', { class: 'btn btn-sm btn-ghost', onclick: () => go(todayISO) }, 'Today') : null,
+  );
+  const legend = h('div', { class: 'legend dt-legend' },
+    h('span', { class: 'lg lg-job' }, 'Attended job'),
+    h('span', { class: 'lg lg-bg' }, '⏱ Background (person not busy)'),
+    h('span', { class: 'lg lg-free' }, 'Free time'),
+    h('span', { class: 'lg lg-break' }, 'Break / lunch'),
+    admin ? h('span', { class: 'muted small no-print' }, 'Click a green gap to add a job at that time.') : null,
+  );
+  if (!rows.length) return h('section', { class: 'card' }, nav, h('div', { class: 'empty' }, 'No team members yet.'));
+  const tl = dayTimeline({
+    ctx, rows, iso, isToday, admin,
+    onJob: openJob,
+    onFree: (person, s, e) => edit({ person, iso, times: { start: fmtMin(s), end: fmtMin(e) } }),
+    warningsOf: (a, p) => warningsOf(a, p, iso),
+  });
+  const card = h('section', { class: 'card card-flush day-timeline' },
+    h('div', { class: 'dt-top no-print' }, nav),
+    hasAreas ? h('div', { class: 'dt-cap' }, h('span', { class: 'muted small' }, 'Test capacity: '), capPills(iso)) : null,
+    legend,
+    tl.el);
+  requestAnimationFrame(() => {
+    const d = new Date(); const m = d.getHours() * 60 + d.getMinutes();
+    const day = ctx.dayOf(rows[0].id, iso);
+    tl.scrollTo(isToday && m > day.ws && m < day.we ? m - 60 : day.ws - 30);
+  });
+  if (isToday) {
+    const tick = () => { const d = new Date(); tl.placeNow(d.getHours() * 60 + d.getMinutes()); };
+    requestAnimationFrame(tick);
+    clearInterval(nowTimer);
+    nowTimer = setInterval(() => { if (!card.isConnected) { clearInterval(nowTimer); return; } tick(); }, 30000);
+  }
+  return card;
 }
 
 export function typeTag(type) {

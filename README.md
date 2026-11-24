@@ -36,7 +36,9 @@ Live site (once deployed): `https://meditecmedicalai-gif.github.io/meditec-produ
    [`005_capacity_recurring.sql`](supabase/migrations/005_capacity_recurring.sql) (test capacity, "Any / mixed pump",
    recurring jobs; its last result column says **Live updates: OK** — or lists tables to switch on by hand, see
    *Live updates* below), then [`006_capacity_rules.sql`](supabase/migrations/006_capacity_rules.sql) (agreed
-   capacity rules; never overwrites your own Settings).
+   capacity rules; never overwrites your own Settings), then
+   [`007_station_capacity.sql`](supabase/migrations/007_station_capacity.sql) (test capacity by station;
+   renames *Main test area* to *Quality Check* and adds the two test stations).
 
 ### 3. Lock down sign-in
 1. **Authentication → Sign In / Providers** (called *Providers* in some versions):
@@ -148,6 +150,9 @@ Everyone lands on **Today** after signing in:
 - **From the floor**: newest open demand notes;
 - charts for build-type mix, the eight-week trend, jobs per person (striped = background) and equipment
   hours booked — click any chart to open the week planner;
+- **Who's free now**: every person with their status — *Free* (until when), *Busy* (what, until when),
+  *On break / At lunch*, *Absent* or *Off shift* — updating with the clock; and **Free later today**, each
+  person's next free slot;
 - **Today on the floor**: an hour-by-hour timeline per person with a red "now" line; background jobs run as
   a slim striped band underneath; jobs without times share the day.
 Use ‹ › to look at other weeks. Charts are drawn with [Chart.js](https://www.chartjs.org/).
@@ -179,24 +184,32 @@ select tablename from pg_publication_tables where pubname = 'supabase_realtime' 
   is shown instead. In dark mode it is shown in light ink automatically.
 
 ## Test capacity
-Pumps are tested several at a time, so the planner adds up **testing jobs** that overlap in time and warns
+Pumps are tested several at a time, so the planner adds up the pumps on test that overlap in time and warns
 (it never blocks) when a limit is exceeded.
+- **Counted by station.** Each equipment / test station can be linked to a test area (Settings → Equipment /
+  test stations → *Test area (station)*). A job **booked on a linked station counts towards that area — for any
+  task**, as long as it has a quantity (pumps). Stations: **Quality Check** → Quality Check area (max 7) and
+  **Medicare / Mediflex test bench** → Medicare / Mediflex area (max 1).
+- **No station set?** Then the old rule applies: a testing task counts towards the pump model's default area.
+- **Wrong station warning**: ⚠ when a Medicare / Mediflex job is booked on the Quality Check station, or a
+  Quality Check pump (QPro, Simplex, MediAir…) on the Medicare / Mediflex bench.
 - **Testing tasks** are marked in Settings → Tasks (🧪): Functional test / calibration, Quality testing,
   Soak / burn-in test. For these, **quantity = number of pumps on test**.
 - Each **pump model has a default test area** (Settings → Pump models).
 - **Test areas** (Settings → Test areas & limits) are **separate**, each with its own absolute maximum:
-  *Main test area* **7** (QPro 2000, Simplex, MediAir, MediAir Turn, MATS, Bari-Med 1) and
-  *Medicare / Mediflex test area* **1**. The Medicare / Mediflex area does not count towards the Main 7, and
-  there is no limit across areas.
-- **Limit groups** inside the Main area: QPro 2000 max 7; MediAir + Simplex max 6 combined; MediAir Turn max 3.
-  MATS and Bari-Med 1 have no group of their own — they just count towards the Main area's 7.
+  *Quality Check* **7** (QPro 2000, Simplex, MediAir, MediAir Turn, MATS, Bari-Med 1) and
+  *Medicare / Mediflex test area* **1**. The Medicare / Mediflex area does not count towards Quality Check's 7,
+  and there is no limit across areas.
+- **Limit groups** inside Quality Check: QPro 2000 max 7; MediAir + Simplex max 6 combined; MediAir Turn max 3.
+  MATS and Bari-Med 1 have no group of their own — they just count towards Quality Check's 7.
 - **Same pump, two tasks**: in the Medicare / Mediflex area, calibration and quality testing on the **same pump
   at the same time** count as one pump (no clash). A Medicare and a Mediflex at the same time are two pumps.
 - Times come from the jobs (overnight and background jobs included); a testing job **without times counts all
   day**, so add times for accurate figures.
-- Where you see it: a **Test capacity** row at the top of each day in the planner ("Main 6/7 14:00"; amber =
-  full, red = over), ⚠ on the jobs involved, warnings in the job form before saving, and a **Test areas** card
-  on Today (pumps on test now and today's peak).
+- Where you see it: a **Test capacity** row at the top of each day in the planner, named after the station
+  ("Quality Check 10/7 13:30"; amber = full, red = over), ⚠ on the jobs involved, warnings in the job form before
+  saving, and a **Test areas** card on Today (pumps on test now and today's peak). The Medicare / Mediflex
+  bench only appears in the row on days something is booked on it (its limit and warnings always apply).
 
 ## "Any / mixed pump"
 Repair-type tasks (Settings → Tasks → *Allows "Any / mixed pump"*) can be planned on **Any / mixed pump**,
@@ -245,6 +258,23 @@ be for "Any / mixed pump".
 - **Equipment / test stations** (Settings) can be linked to a job. ⚠ warns when the same equipment is
   booked at overlapping times (any person), and when a person has two attended jobs whose times overlap.
 - **On a phone** the planner shows one day at a time with day tabs.
+- **Busy / free bar** under each person's day: filled = busy, empty (green) = free, grey = break / lunch,
+  striped = background, with text such as "4h busy · 3h 15m free" ("All free", "Fully booked", "1 no time").
+  Jobs in each cell are sorted by start time, with the **time first in bold**.
+
+## Day timeline
+**Week | Day timeline** at the top of the planner switches view (`#/planner?view=day&day=2026-11-24`).
+- Rows are people; columns are the working day (from Settings, e.g. 08:30–16:30) in 30-minute steps, with an
+  hour either side for overnight jobs (scroll sideways).
+- **Attended jobs** are solid blocks in the build-type colour, e.g. "QPro 2000 · Quality testing ×5 · 09:00–11:00".
+- **Background jobs** are a thin striped band under the row — they don't make the person busy.
+- **Breaks and lunch** are grey columns; an **absence** shades the whole row.
+- **Free time** is a green gap labelled "Free 10:45–12:30". Admins click a gap to add a job with the person and
+  times filled in.
+- Jobs **without times** sit in a *No time set* strip at the end of the row — click one to add times.
+- On today a red line shows **now**. Pick Mon–Fri, or use ‹ › to move a working day at a time.
+- **Job form:** adding or editing a job shows that person's day as a **mini timeline** — their jobs, free gaps
+  (click one to use it) and this job; it turns red if it overlaps another attended job.
 
 ## Demand & Notes
 - Anyone can post a note: pump model (or a general note), build type, quantity, needed-by date,
@@ -275,7 +305,8 @@ Rows are per pump model and build type, with an *All types* subtotal per model. 
 **Print** on the planner prints the displayed week on **A4 landscape**: page 1 is the plan (who does what
 each day, absences, build-type colours, working hours, printed date and name), page 2 is the weekly
 summary. Navigation, buttons and the demand panel are left out. In the print dialog, keep
-"Background graphics" ticked for the colours. Printing from a phone also gives the full week grid.
+"Background graphics" ticked for the colours. Printing from a phone also gives the full week grid. In **Day timeline** view, **Print** prints that day's
+timeline on one A4 landscape page.
 
 ## History (admin)
 **History** lists every change to planner jobs, absences, demand notes and build types: when, who, what
@@ -297,3 +328,4 @@ This is a planning aid, not a controlled QMS record.
 6. ✅ Background & overnight jobs, job times, equipment / test stations
 7. ✅ Today dashboard, charts, live updates, Meditec visual redesign (light / dark)
 8. ✅ Test capacity, "Any / mixed pump" repairs, recurring jobs, clearer background jobs
+9. ✅ Test capacity by station (Quality Check), Day timeline, busy / free time, "Who's free now"

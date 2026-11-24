@@ -11,6 +11,8 @@ import { computeSummary, loadSummaryDemand } from './summary.js';
 import { coversDay, endDateOf, intervalOf, timeLabel, hm } from '../jobs.js';
 import { capacityForDay, capacityAt, level } from '../capacity.js';
 import { token, reducedMotion, onThemeChange } from '../theme.js';
+import { statusAt, nextFree, fmtMin as fmtClock, fmtDur } from '../daytime.js';
+import { jobText } from './dayTimeline.js';
 
 Chart.register(BarController, BarElement, DoughnutController, ArcElement, LineController, LineElement,
   PointElement, CategoryScale, LinearScale, Tooltip, Filler);
@@ -317,7 +319,7 @@ export async function renderToday(main) {
     h('h2', {}, 'Test areas'),
     h('p', { class: 'sub' }, 'Pumps on test right now · today’s peak'),
     capToday.areas.length
-      ? h('div', { class: 'test-areas' }, capToday.areas.map((a) => {
+      ? h('div', { class: 'test-areas' }, capToday.areas.filter((a, i) => i === 0 || a.peak > 0).map((a) => {
           const fillEl = h('span', { class: 'ta-fill' });
           const nowEl = h('b', {}, '0');
           areaRows.set(a.area.id, { fillEl, nowEl, max: a.max });
@@ -343,12 +345,14 @@ export async function renderToday(main) {
 
   // ---------------------------------------------------------------- today timeline
   const timeline = todayTimeline({ now, todayISO, hours, weekend });
+  const rightNow = whoIsFree({ now, todayISO, weekend });
 
   mount(main,
     head,
     h('div', { class: 'dash' },
       shift,
       stats,
+      h('div', { class: 'dash-row r-2c' }, rightNow.whoCard, rightNow.laterCard),
       h('div', { class: 'dash-row r-2' }, glance, feedCard),
       h('div', { class: 'dash-row r-3' }, mixCard, trendCard, workCard),
       h('div', { class: 'dash-row r-2b' }, timeline.card, h('div', { class: 'dash' }, testCard, equipCard)),
@@ -451,6 +455,7 @@ export async function renderToday(main) {
     else t = `${dur(we - m)} to go`;
     shiftText.textContent = t;
     timeline.placeNow(m);
+    rightNow.update(m);
     updateTestNow(m);
   };
   placeNow = timeline.placeNow;
@@ -571,4 +576,53 @@ function todayTimeline({ now, todayISO, hours, weekend }) {
     nowline.dataset.t = fmtMin(m);
   });
   return { card, placeNow: (m) => placeNowFns.forEach((f) => f(m)) };
+}
+
+// ------------------------------------------------------------------ "right now"
+const STATUS_ORDER = { free: 0, break: 1, busy: 2, off: 3, absent: 4 };
+function whoIsFree({ now, todayISO, weekend }) {
+  const people = now.people.filter((p) => p.active);
+  const planHref = `#/planner?view=day&day=${todayISO}`;
+  const sumEl = h('p', { class: 'sub' });
+  const list = h('ul', { class: 'who-list' });
+  const laterList = h('ul', { class: 'later-list' });
+  const whoCard = h('section', { class: 'card who-card', 'aria-label': 'Who’s free now' },
+    h('div', { class: 'card-head' }, h('h2', {}, 'Who’s free now'), h('a', { class: 'link small', href: planHref }, 'Day timeline →')), sumEl, list);
+  const laterCard = h('section', { class: 'card later-card', 'aria-label': 'Free later today' },
+    h('h2', {}, 'Free later today'), h('p', { class: 'sub' }, 'Each person’s next free slot'), laterList);
+  if (weekend || !people.length) {
+    const msg = weekend ? 'It’s the weekend — no shift today.' : 'No team members yet.';
+    list.append(h('li', { class: 'muted' }, msg)); laterList.append(h('li', { class: 'muted' }, msg));
+    return { whoCard, laterCard, update: () => {} };
+  }
+  const days = people.map((p) => ({ p, day: now.dayOf(p.id, todayISO) }));
+
+  const update = (m) => {
+    const st = days.map((x) => ({ ...x, st: statusAt(x.day, m) }))
+      .sort((a, b) => STATUS_ORDER[a.st.kind] - STATUS_ORDER[b.st.kind] || a.p.name.localeCompare(b.p.name));
+    const n = (k) => st.filter((x) => x.st.kind === k).length;
+    sumEl.textContent = [`${n('free')} free`, `${n('busy')} busy`, n('break') ? `${n('break')} on break` : null, n('absent') ? `${n('absent')} absent` : null]
+      .filter(Boolean).join(' · ') + ` · ${fmtClock(m)}`;
+    mount(list, st.map(({ p, day, st: x }) => {
+      let label; let detail;
+      if (x.kind === 'absent') { label = 'Absent'; detail = ABSENCE_TYPES[day.absent.absence_type] || 'Away'; }
+      else if (x.kind === 'off') { label = 'Off shift'; detail = x.text; }
+      else if (x.kind === 'break') { label = x.label === 'Lunch' ? 'At lunch' : 'On break'; detail = `until ${fmtClock(x.until)}`; }
+      else if (x.kind === 'busy') { label = 'Busy'; detail = [jobText(now, x.job), `until ${fmtClock(x.until)}`, x.more ? `+${x.more} more` : null].filter(Boolean).join(' · '); }
+      else { label = 'Free'; detail = `until ${fmtClock(x.until)}`; }
+      return h('li', { class: `who who-${x.kind}`, 'data-person': p.id },
+        avatar(p.name, p.id, 'av-sm'),
+        h('span', { class: 'who-name' }, p.name),
+        h('span', { class: `who-pill pill-${x.kind}` }, label),
+        h('span', { class: 'who-detail' }, detail));
+    }));
+    const later = days.filter((x) => !x.day.absent).map((x) => ({ ...x, slot: nextFree(x.day, m) }))
+      .sort((a, b) => (a.slot ? a.slot[0] : 1e9) - (b.slot ? b.slot[0] : 1e9) || a.p.name.localeCompare(b.p.name));
+    mount(laterList, later.length ? later.map(({ p, slot }) => h('li', { class: `later ${slot ? '' : 'none'}` },
+      h('span', { class: 'who-name' }, p.name),
+      slot ? [h('b', { class: 'later-time' }, `${slot[0] <= m ? 'now' : fmtClock(slot[0])}–${fmtClock(slot[1])}`), h('span', { class: 'muted small' }, ` ${fmtDur(slot[1] - Math.max(slot[0], m))}`)]
+        : h('span', { class: 'muted small' }, 'No free time left today'))) : h('li', { class: 'muted' }, 'Everyone is away today.'));
+  };
+  update(nowMinutes());
+  return { whoCard, laterCard, update };
 }
