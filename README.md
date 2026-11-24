@@ -38,7 +38,11 @@ Live site (once deployed): `https://meditecmedicalai-gif.github.io/meditec-produ
    *Live updates* below), then [`006_capacity_rules.sql`](supabase/migrations/006_capacity_rules.sql) (agreed
    capacity rules; never overwrites your own Settings), then
    [`007_station_capacity.sql`](supabase/migrations/007_station_capacity.sql) (test capacity by station;
-   renames *Main test area* to *Quality Check* and adds the two test stations).
+   renames *Main test area* to *Quality Check* and adds the two test stations), then
+   [`008_work_hours.sql`](supabase/migrations/008_work_hours.sql) (individual working hours: work patterns,
+   per-person hours and one-off changes; "one at a time" capacity mode for the Medicare / Mediflex bench;
+   recurring jobs skip non-working days). It ends with `notify pgrst, 'reload schema'` so the website sees the
+   new tables at once — the SQL Editor then shows *Success. No rows returned*, which is expected.
 
 ### 3. Lock down sign-in
 1. **Authentication → Sign In / Providers** (called *Providers* in some versions):
@@ -150,9 +154,12 @@ Everyone lands on **Today** after signing in:
 - **From the floor**: newest open demand notes;
 - charts for build-type mix, the eight-week trend, jobs per person (striped = background) and equipment
   hours booked — click any chart to open the week planner;
-- **Who's free now**: every person with their status — *Free* (until when), *Busy* (what, until when),
-  *On break / At lunch*, *Absent* or *Off shift* — updating with the clock; and **Free later today**, each
-  person's next free slot;
+- **Who's free now**: every person with their status, using **their own hours** — *Free* (until when), *Busy*
+  (what, until when), *On break / On lunch*, *Not started yet*, *Finished for the day*, *Not working* or
+  *Absent* — updating with the clock; and **Free later today**, each person's next free slot;
+- the **shift bar** shows the signed-in person's own hours when their login is linked to them (People → Edit →
+  *Linked login*), otherwise the default pattern;
+- **Export to Excel** (see below);
 - **Today on the floor**: an hour-by-hour timeline per person with a red "now" line; background jobs run as
   a slim striped band underneath; jobs without times share the day.
 Use ‹ › to look at other weeks. Charts are drawn with [Chart.js](https://www.chartjs.org/).
@@ -183,9 +190,38 @@ select tablename from pg_publication_tables where pubname = 'supabase_realtime' 
   To change it, replace that one file — no code changes. If the file is missing, a "Meditec" wordmark
   is shown instead. In dark mode it is shown in light ink automatically.
 
+## Working hours
+Each person has their own start, finish, break and lunch.
+- **Work patterns** (Settings → *Work patterns*): named templates such as "Standard 08:30–16:30" or
+  "Early 07:00–15:00", set **per weekday** (e.g. Friday finish 13:00) with **non-working days** ticked off (for
+  part-time staff). The old working hours became **Standard**, the default for anyone without a pattern.
+- **Per person** (People → *Working hours* → *Change hours…*): choose a pattern **from a date** ("effective
+  from") — weeks before that date keep their old hours — with optional **personal overrides** of start, finish,
+  break or lunch (no new pattern needed).
+- **One-off changes** (planner → *Hours* in a person's day): "leaving at 14:00 Thursday", "lunch at 13:30
+  today" or "not working". Only what differs from the usual hours is stored. The cell shows ⏰ *Leaving 14:00*.
+- **Used everywhere**: the Day timeline (each row shows that person's window, time outside it greyed, their own
+  break and lunch), the busy / free bar and "Xh busy · Yh free", *Who's free now*, free-gap clicks, the job
+  form's mini timeline and the Excel export.
+- **Warnings** (never blocking): ⚠ a job on a non-working day or outside the person's hours (asks *Save anyway?*);
+  ⏰ a job that runs across their break or lunch — just a note, as people often take it during a job.
+- **Non-working days** are shaded in the week grid ("Not working"), and **recurring jobs skip them**.
+- Viewers see everyone's hours (People page, planner) but can't change them.
+
 ## Test capacity
 Pumps are tested several at a time, so the planner adds up the pumps on test that overlap in time and warns
 (it never blocks) when a limit is exceeded.
+- **Peak at a moment, never a daily total.** 7 in the morning that finish at 11:00 and 7 more from 11:00 is
+  **7/7**, not 14/7 — a job ending at 11:00 and one starting at 11:00 don't overlap.
+- **Jobs without times are not counted** (we can't know when they run). They are listed as **⚠ untimed** in the
+  capacity row, the Day timeline and the export, with a prompt to add times.
+- **Capacity mode** per test area (Settings → Test areas → Edit): *Simultaneous* (Quality Check — pumps at the same
+  moment add up) or *One at a time* (Medicare / Mediflex bench). On a one-at-a-time bench a job is a batch
+  processed pump by pump, so "Mediflex ×8, 13:30–15:30" counts as **1**: the row shows **"bench busy 13:30–15:30 ·
+  8 pumps · ~15 min each"** instead of 8/1, and only **overlapping jobs** on the bench are flagged.
+- **Occupancy graph**: hover (or tab to) a Quality Check pill in the capacity row to see pumps on test across the
+  day against the limit, e.g. "08:30–11:00: 7 · 11:00–13:30: 2 · 13:30–16:00: 7", and the free places. The Day
+  timeline has the same graph as a row lined up with the time columns, plus a bench row.
 - **Counted by station.** Each equipment / test station can be linked to a test area (Settings → Equipment /
   test stations → *Test area (station)*). A job **booked on a linked station counts towards that area — for any
   task**, as long as it has a quantity (pumps). Stations: **Quality Check** → Quality Check area (max 7) and
@@ -262,9 +298,26 @@ be for "Any / mixed pump".
   striped = background, with text such as "4h busy · 3h 15m free" ("All free", "Fully booked", "1 no time").
   Jobs in each cell are sorted by start time, with the **time first in bold**.
 
+## Excel export
+**Export to Excel** on the planner and on Today (admin and viewer). Choose the dates — this week, last week, the
+week shown, this month or custom from–to — and optionally specific people. The browser builds the .xlsx
+(no data leaves Supabase), named like `Pump room plan 2026-11-23 to 2026-11-27.xlsx`:
+- **Timesheet** — one row per job per day per person: Date, Person, Start, End, Duration (hours), Task, Pump model
+  (or Any / mixed with the actual pumps), Quantity, Build type, Station, Attended / Background, Recurring, Notes.
+  Overnight jobs are split by day. **Free** rows fill the gaps within each person's own hours, plus **Break** and
+  **Lunch** rows (and *Absent* / *Not a working day*). The total row uses SUBTOTAL, so it follows your filters.
+- **Absences** — Date, Person, Type, Hours (their working hours that day), Notes.
+- **Summary by person** — hours per task, total busy, free, break & lunch and absent hours (each person's own hours).
+- **Summary by pump** — units per pump model and build type (built, tested, other).
+- **Test capacity** — per day: Quality Check peak and time of peak; Medicare / Mediflex bench busy hours and times;
+  untimed test jobs.
+
+Every sheet has a frozen header, filters, real date and time cells, sensible widths, totals and A4-landscape print
+settings. The Excel library ([ExcelJS](https://github.com/exceljs/exceljs)) is only downloaded when you export.
+
 ## Day timeline
 **Week | Day timeline** at the top of the planner switches view (`#/planner?view=day&day=2026-11-24`).
-- Rows are people; columns are the working day (from Settings, e.g. 08:30–16:30) in 30-minute steps, with an
+- Rows are people (each with their own working window, e.g. 07:00–15:00); columns are 30-minute steps, with an
   hour either side for overnight jobs (scroll sideways).
 - **Attended jobs** are solid blocks in the build-type colour, e.g. "QPro 2000 · Quality testing ×5 · 09:00–11:00".
 - **Background jobs** are a thin striped band under the row — they don't make the person busy.
@@ -329,3 +382,5 @@ This is a planning aid, not a controlled QMS record.
 7. ✅ Today dashboard, charts, live updates, Meditec visual redesign (light / dark)
 8. ✅ Test capacity, "Any / mixed pump" repairs, recurring jobs, clearer background jobs
 9. ✅ Test capacity by station (Quality Check), Day timeline, busy / free time, "Who's free now"
+10. ✅ Individual working hours (patterns, per person, one-off), capacity fixes (peak, untimed, one-at-a-time
+    bench, occupancy graph), Excel export

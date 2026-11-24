@@ -49,12 +49,19 @@ let collapsed = (() => { try { return localStorage.getItem('sidebar') === 'colla
 
 async function loadShellData() {
   const today = new Date().toISOString().slice(0, 10);
-  const [hours, overdue, profiles] = await Promise.all([
+  const [hours, overdue, profiles, patterns, patternDays] = await Promise.all([
     supabase.from('app_settings').select('*').eq('id', 1).maybeSingle(),
     supabase.from('demand_notes').select('id', { count: 'exact', head: true }).in('status', ['open', 'planned']).lt('needed_by', today),
     supabase.from('profiles').select('id, full_name, email'),
+    supabase.from('work_patterns').select('id, name, is_default'),
+    supabase.from('work_pattern_days').select('*'),
   ]);
-  workingHours = hours.data;
+  // Default work pattern, Monday (falls back to the Settings hours before migration 008)
+  const def = (patterns.data || []).find((p) => p.is_default);
+  const mon = def && (patternDays.data || []).find((d) => d.pattern_id === def.id && d.weekday === 1 && d.works);
+  workingHours = mon
+    ? { name: def.name, work_start: mon.start_time, work_end: mon.end_time, break_time: mon.break_time, lunch_time: mon.lunch_time, break_minutes: mon.break_minutes, lunch_minutes: mon.lunch_minutes }
+    : hours.data;
   overdueCount = overdue.count || 0;
   names = new Map((profiles.data || []).map((p) => [p.id, p.full_name || p.email]));
 }
@@ -78,9 +85,10 @@ function navLinks(path) {
 function sidebar(path) {
   const name = auth.profile?.full_name || auth.session?.user.email;
   const hours = workingHours
-    ? h('div', { class: 'hours', title: 'Working hours (Settings)' },
+    ? h('div', { class: 'hours', title: `${workingHours.name || 'Standard'} hours (Settings → Work patterns). Each person can have their own.` },
         h('b', {}, `${hhmm(workingHours.work_start)}–${hhmm(workingHours.work_end)}`),
-        ` · Break ${hhmm(workingHours.break_time)} · Lunch ${hhmm(workingHours.lunch_time)}`)
+        workingHours.break_minutes !== 0 && workingHours.break_time ? ` · Break ${hhmm(workingHours.break_time)}` : '',
+        workingHours.lunch_minutes !== 0 && workingHours.lunch_time ? ` · Lunch ${hhmm(workingHours.lunch_time)}` : '')
     : null;
   return h('aside', { class: 'sidebar', 'aria-label': 'Main navigation' },
     h('a', { class: 'brand', href: `#${DEFAULT_ROUTE}` }, logo('brand-logo'), h('span', { class: 'brand-word' }, 'Meditec')),
@@ -194,7 +202,8 @@ let liveTimer = null;
 const LABEL = { assignments: 'the plan', absences: 'absences', demand_notes: 'demand notes', people: 'people', person_skills: 'training records',
   pump_models: 'pump models', tasks: 'tasks', build_types: 'build types', equipment: 'equipment', app_settings: 'settings',
   test_areas: 'test areas', test_area_shared_tasks: 'test areas', test_limits: 'test limits', test_limit_models: 'test limits',
-  recurring_jobs: 'recurring jobs', recurring_exceptions: 'recurring jobs' };
+  recurring_jobs: 'recurring jobs', recurring_exceptions: 'recurring jobs',
+  work_patterns: 'working hours', work_pattern_days: 'working hours', person_work_patterns: 'working hours', person_day_hours: 'working hours' };
 
 function onLiveChange(payload) {
   const row = payload.new && Object.keys(payload.new).length ? payload.new : null;

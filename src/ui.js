@@ -67,8 +67,8 @@ export function reportError(error, context = 'Something went wrong') {
  * Opens a modal dialog. `body` is a node; `actions` is an array of
  * { label, variant, onClick } — onClick may return false to keep it open.
  */
-export function openModal({ title, body, actions = [] }) {
-  const dialog = h('dialog', { class: 'modal' });
+export function openModal({ title, body, actions = [], wide = false }) {
+  const dialog = h('dialog', { class: `modal ${wide ? 'modal-wide' : ''}` });
   const close = () => {
     dialog.close();
     dialog.remove();

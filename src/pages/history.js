@@ -17,10 +17,12 @@ const TABLES = {
   recurring_jobs: 'Recurring jobs',
   test_areas: 'Test areas',
   test_limits: 'Test limits',
+  work_patterns: 'Working hours',
 };
 const ACTIONS = { insert: 'Added', update: 'Changed', delete: 'Deleted' };
 const NOUN = { assignments: 'job', absences: 'absence', demand_notes: 'demand note', build_types: 'build type', equipment: 'equipment', recurring_jobs: 'recurring job', recurring_exceptions: 'recurring job date', test_areas: 'test area',
-  test_limits: 'test limit', test_limit_models: 'test limit model', test_area_shared_tasks: 'test area shared task' };
+  test_limits: 'test limit', test_limit_models: 'test limit model', test_area_shared_tasks: 'test area shared task',
+  work_patterns: 'work pattern', work_pattern_days: 'work pattern day', person_work_patterns: 'person’s hours', person_day_hours: 'one-off hours' };
 const IGNORE = new Set(['id', 'created_at', 'created_by', 'updated_at', 'updated_by']);
 
 let tableFilter = '';
@@ -105,8 +107,14 @@ function describe(table, row, L) {
       return [row.pump_model_id ? v('pump_model_id') : 'General note', row.build_type_id && v('build_type_id'),
         row.quantity != null && `× ${row.quantity}`, row.needed_by && `by ${v('needed_by')}`,
         row.comment && `“${row.comment.length > 60 ? row.comment.slice(0, 57) + '…' : row.comment}”`].filter(Boolean).join(' · ');
-    case 'build_types':
+    case 'build_types': case 'work_patterns':
       return row.name;
+    case 'work_pattern_days':
+      return `${['', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'][row.weekday] || ''} · ${row.works ? `${String(row.start_time).slice(0, 5)}–${String(row.end_time).slice(0, 5)}` : 'not working'}`;
+    case 'person_work_patterns':
+      return `${v('person_id')} · from ${v('effective_from')}`;
+    case 'person_day_hours':
+      return `${v('person_id')} · ${v('work_date')} · ${row.works ? [row.start_time && `start ${String(row.start_time).slice(0, 5)}`, row.end_time && `finish ${String(row.end_time).slice(0, 5)}`, row.lunch_time && `lunch ${String(row.lunch_time).slice(0, 5)}`].filter(Boolean).join(', ') || 'hours changed' : 'not working'}`;
     default:
       return '';
   }

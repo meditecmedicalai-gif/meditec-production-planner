@@ -895,3 +895,109 @@ button.mini-free { cursor: pointer; } button.mini-free:hover { background: color
   .daybar-wrap { display: none; }
   .view-toggle, .day-nav { display: none !important; }
 }
+
+/* =====================================================================
+   Phase 10 — individual working hours, capacity graph, export
+   ===================================================================== */
+.modal-wide { width: min(860px, calc(100vw - 24px)); max-width: none; }
+.form-grid-4 { display: grid; gap: .6rem .8rem; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); }
+
+/* week grid: non-working days and personal hours */
+.day-cell.is-offday { background: repeating-linear-gradient(135deg, var(--card) 0 10px, var(--card-2) 10px 20px); }
+.nonwork { display: flex; flex-direction: column; align-items: flex-start; gap: .1rem; width: 100%; text-align: left; font: inherit; font-size: .8rem; font-weight: 700;
+  color: var(--muted); padding: .35rem .5rem; border-radius: 8px; border: 1px dashed var(--line-2); background: var(--card); }
+button.nonwork { cursor: pointer; } button.nonwork:hover { border-color: var(--brand); }
+.hours-tag { display: inline-flex; align-items: center; gap: .25rem; flex-wrap: wrap; align-self: flex-start; font: inherit; font-size: .74rem; font-weight: 650;
+  color: var(--ink-2); background: var(--card-2); border: 1px solid var(--line); border-radius: 99px; padding: .05rem .5rem; font-variant-numeric: tabular-nums; }
+.hours-oneoff { background: var(--amber-soft); border-color: color-mix(in srgb, var(--amber-fill) 50%, var(--line)); color: var(--amber); }
+button.hours-tag { cursor: pointer; }
+.hours-tag .absence-note { font-weight: 500; }
+
+/* day timeline: per-person hours */
+.dt-hours { font-weight: 650; color: var(--ink-2) !important; }
+.dt-off-day { background: repeating-linear-gradient(135deg, var(--card-2) 0 8px, color-mix(in srgb, var(--muted) 10%, var(--card)) 8px 16px); }
+.dt-nonwork { position: absolute; inset: 0; z-index: 3; display: flex; align-items: center; padding-left: 1rem; font-weight: 700; font-size: .85rem; color: var(--muted); }
+.dt-row.is-offday .dt-name { background: var(--card-2); }
+.dt-break-tag { position: absolute; bottom: 2px; left: 50%; transform: translateX(-50%); font-size: .56rem; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); white-space: nowrap; }
+.dt-cap-row .dt-name { background: var(--card-2); }
+.dt-cap-row .dt-name b { font-size: .8rem; }
+.dt-occ { min-height: 52px; background: var(--card-2); }
+.dt-occ .occ-svg { position: absolute; inset: 3px 0; width: 100%; height: calc(100% - 6px); }
+.dt-occ-max { position: absolute; right: 4px; top: 2px; font-size: .62rem; color: var(--coral); font-weight: 700; }
+.dt-bench { position: absolute; top: 9px; height: 32px; border-radius: 8px; padding: 0 8px; display: flex; align-items: center; overflow: hidden; white-space: nowrap;
+  font-size: .74rem; font-weight: 700; color: var(--info); background: var(--info-soft); border: 1.5px solid color-mix(in srgb, var(--info) 55%, var(--line)); }
+.dt-bench small { font-weight: 500; color: var(--ink-2); }
+.dt-bench-over { color: var(--coral); background: var(--coral-soft); border-color: var(--coral-fill); }
+.cap-ok-txt { color: var(--ok) !important; } .cap-near-txt { color: var(--amber) !important; } .cap-over-txt { color: var(--coral) !important; font-weight: 700; }
+
+/* occupancy graph */
+.occ-svg { display: block; overflow: visible; }
+.occ-area { fill: color-mix(in srgb, var(--brand) 22%, transparent); }
+.occ-line { fill: none; stroke: var(--brand); stroke-width: 1.6; }
+.occ-limit { stroke: var(--coral-fill); stroke-width: 1.2; stroke-dasharray: 5 4; }
+.occ-over { fill: color-mix(in srgb, var(--coral-fill) 22%, transparent); }
+.occ-tick { font-size: 9px; fill: var(--muted); }
+
+/* capacity row: sparkline + popover */
+.cap-cell { display: flex; flex-wrap: wrap; gap: .25rem; }
+.cap-wrap { position: relative; display: inline-flex; flex-direction: column; gap: 2px; outline: none; }
+.cap-spark { display: block; width: 100%; min-width: 80px; height: 16px; }
+.cap-spark .occ-svg { width: 100%; height: 16px; }
+.cap-pop { display: none; position: absolute; z-index: 30; top: calc(100% + 6px); left: 0; width: 320px; padding: .6rem .7rem; border-radius: 12px;
+  background: var(--card); border: 1px solid var(--line-2); box-shadow: var(--shadow-hover, 0 8px 24px rgb(0 0 0 / 15%)); color: var(--ink); white-space: normal; }
+.cap-wrap:hover .cap-pop, .cap-wrap:focus-within .cap-pop, .cap-wrap:focus .cap-pop { display: block; }
+.cap-pop-title { font-size: .76rem; font-weight: 700; margin-bottom: .3rem; }
+.cap-pop-graph { height: 70px; } .cap-pop-graph .occ-svg { width: 100%; height: 70px; }
+.cap-pop-text, .cap-pop-free { font-size: .72rem; color: var(--ink-2); margin-top: .3rem; font-variant-numeric: tabular-nums; }
+.cap-pop-free { color: var(--ok); }
+.cap-busy { background: var(--info-soft); color: var(--info); }
+.cap-untimed { cursor: help; }
+.ta-graph { height: 34px; margin: 4px 0 2px; } .ta-graph .occ-svg { width: 100%; height: 34px; }
+.ta-untimed { color: var(--amber); font-weight: 600; }
+
+/* settings: patterns */
+.pattern-summary { font-size: .8rem; color: var(--ink-2); margin-top: .15rem; font-variant-numeric: tabular-nums; }
+.pattern-table { width: 100%; border-collapse: collapse; font-size: .82rem; }
+.pattern-table th, .pattern-table td { padding: .25rem .3rem; text-align: left; border-bottom: 1px solid var(--line); }
+.pattern-table input[type=time] { width: 6.6rem; } .pattern-table input[type=number] { width: 4.4rem; }
+.pattern-table tr.off td { opacity: .45; }
+.wd-label { display: inline-flex; align-items: center; gap: .3rem; font-weight: 650; white-space: nowrap; }
+
+/* people: hours card */
+.data-table { width: 100%; border-collapse: collapse; font-size: .88rem; }
+.data-table th, .data-table td { padding: .55rem .8rem; text-align: left; border-top: 1px solid var(--line); vertical-align: top; }
+.data-table thead th { background: var(--card-2); font-size: .78rem; color: var(--muted); border-top: 0; }
+.hours-week { font-size: .8rem; color: var(--ink-2); font-variant-numeric: tabular-nums; min-width: 16rem; }
+.hours-history { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: .2rem; font-size: .82rem; }
+.linklike { font: inherit; color: var(--brand); background: none; border: 0; padding: 0; cursor: pointer; text-decoration: underline; text-underline-offset: 2px; }
+
+/* today */
+.shift-who { font-size: .76rem; color: var(--muted); margin-top: .15rem; font-variant-numeric: tabular-nums; }
+.lane .outside { position: absolute; top: 0; bottom: 0; background: repeating-linear-gradient(135deg, transparent 0 6px, color-mix(in srgb, var(--muted) 8%, transparent) 6px 7px); }
+.pill-off { white-space: nowrap; }
+
+/* export dialog */
+.export-people { max-height: 200px; overflow: auto; padding: .4rem .6rem; border: 1px solid var(--line); border-radius: 10px; }
+.export-progress { font-size: .85rem; color: var(--muted); }
+
+@media (max-width: 760px) {
+  .cap-pop { width: min(300px, calc(100vw - 40px)); }
+  .data-table th, .data-table td { padding: .45rem .5rem; }
+  .pattern-table input[type=time] { width: 5.6rem; }
+}
+@media print {
+  .cap-pop, .cap-spark { display: none !important; }
+  .dt-occ { background: #f3eef0; }
+  .day-cell.is-offday { background: #f3eef0; }
+}
+.chip-note-icon { font-size: .78rem; line-height: 1; }
+.note-box { margin: 0; padding: .45rem .65rem; border-radius: 10px; font-size: .84rem; background: var(--info-soft); color: var(--info); border: 1px solid color-mix(in srgb, var(--info) 30%, var(--line)); }
+.phone-cap { display: flex; flex-wrap: wrap; align-items: center; gap: .3rem; min-width: 0; }
+.phone-cap .cap-cell { min-width: 0; flex: 1 1 100%; }
+.phone-cap .cap-pill, .dt-cap .cap-pill { white-space: normal; }
+.phone-cap .cap-wrap { max-width: 100%; }
+.cap-pop-scale { position: relative; height: 13px; margin-top: 2px; }
+.cap-pop-scale span { position: absolute; transform: translateX(-50%); font-size: .62rem; color: var(--muted); font-variant-numeric: tabular-nums; }
+.hours-card .person-cell { white-space: nowrap; }
+.pattern-list .ref-main { display: flex; flex-wrap: wrap; align-items: baseline; gap: .2rem .6rem; min-width: 0; }
+.pattern-list .ref-main > div { flex-basis: 100%; }

@@ -7,7 +7,7 @@
 -- The whole check is ONE statement. At the end it deliberately stops
 -- with an "error" whose message is the report:
 --
---     RLS CHECK FINISHED: 108 passed, 0 failed ...
+--     RLS CHECK FINISHED: 130 passed, 0 failed ...
 --
 -- Raising that error is what undoes every bit of test data, so nothing
 -- is left behind. Every line should start with PASS.
@@ -28,6 +28,8 @@ declare
   pid  uuid;
   t    record;
   missing text;
+  pat  uuid;
+  pid3 uuid;
   pid2 uuid;
   passed int;
   failed int;
@@ -64,12 +66,13 @@ begin
   select string_agg(tb, ', ' order by tb) into missing
   from unnest(array['assignments','absences','demand_notes','people','person_skills','pump_models','tasks','build_types',
                     'equipment','app_settings','test_areas','test_area_shared_tasks','test_limits','test_limit_models',
-                    'recurring_jobs','recurring_exceptions']) as tb
+                    'recurring_jobs','recurring_exceptions','work_patterns','work_pattern_days','person_work_patterns',
+                    'person_day_hours']) as tb
   where not coalesce((select puballtables from pg_publication where pubname = 'supabase_realtime'), false)
     and not exists (select 1 from pg_publication_tables p where p.pubname = 'supabase_realtime' and p.schemaname = 'public' and p.tablename = tb);
   res := res || case when missing is null
-    then 'PASS  setup   live updates enabled for all 16 planning tables'
-    else 'FAIL  setup   live updates missing for: ' || missing || ' (run 005, or Dashboard → Database → Publications → supabase_realtime)' end;
+    then 'PASS  setup   live updates enabled for all 20 planning tables'
+    else 'FAIL  setup   live updates missing for: ' || missing || ' (run 005 and 008, or Dashboard → Database → Publications → supabase_realtime)' end;
   res := res || format('%s  setup   test areas, limits and recurring jobs exist (005 migration run)',
     case when to_regclass('public.recurring_jobs') is not null and to_regclass('public.test_limits') is not null then 'PASS' else 'FAIL' end);
   res := res || format('%s  setup   change log (audit_log) is never sent as a live update',
@@ -100,6 +103,20 @@ begin
   res := res || format('%s  setup   MATS and Bari-Med 1 have no limit group (count towards Quality Check only)',
     case when exists (select 1 from public.test_limit_models x join public.pump_models m on m.id = x.pump_model_id
                       where m.name in ('MediAir Turn Sense (MATS)', 'Bari-Med 1')) then 'FAIL' else 'PASS' end);
+  res := res || format('%s  setup   work patterns exist with exactly one default, 7 weekdays each (008 migration run)',
+    case when to_regclass('public.person_day_hours') is not null
+          and (select count(*) from public.work_patterns where is_default) = 1
+          and not exists (select 1 from public.work_patterns p where (select count(*) from public.work_pattern_days d where d.pattern_id = p.id) <> 7)
+         then 'PASS' else 'FAIL' end);
+  res := res || format('%s  setup   Medicare / Mediflex area works one pump at a time (capacity mode "sequential")',
+    case when (select capacity_mode from public.test_areas where name = 'Medicare / Mediflex test area') = 'sequential'
+          and (select capacity_mode from public.test_areas where name = 'Quality Check') = 'simultaneous' then 'PASS' else 'FAIL' end);
+  res := res || format('%s  setup   default pattern: a person with no pattern works Monday, not Sunday',
+    case when public.person_works(gen_random_uuid(), date '2026-11-23') and not public.person_works(gen_random_uuid(), date '2026-11-29')
+         then 'PASS' else 'FAIL' end);
+  res := res || format('%s  setup   people can be linked to a login (people.user_id)',
+    case when exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'people' and column_name = 'user_id')
+         then 'PASS' else 'FAIL' end);
   res := res || format('%s  setup   viewer e-mail found (%s)', case when viewer_id is null then 'FAIL' else 'PASS' end, viewer_email);
   res := res || format('%s  setup   admin e-mail found (%s)',  case when admin_id  is null then 'FAIL' else 'PASS' end, admin_email);
 
@@ -216,6 +233,34 @@ begin
 
     select public.extend_recurring_jobs(current_date + 14) into n;
     res := res || format('%s  viewer  cannot generate recurring jobs', case when n = 0 then 'PASS' else 'FAIL' end);
+
+    select count(*) into n from public.work_patterns;
+    res := res || format('%s  viewer  can see working hours (work patterns)', case when n > 0 then 'PASS' else 'FAIL' end);
+    begin
+      insert into public.work_patterns (name) values ('RLS test pattern');
+      ok := false;
+    exception when insufficient_privilege then ok := true;
+    end;
+    res := res || format('%s  viewer  cannot add a work pattern', case when ok then 'PASS' else 'FAIL' end);
+    update public.work_pattern_days set end_time = '23:00' where works;
+    get diagnostics n = row_count;
+    res := res || format('%s  viewer  cannot change pattern hours', case when n = 0 then 'PASS' else 'FAIL' end);
+    begin
+      insert into public.person_work_patterns (person_id, pattern_id, effective_from)
+      values ((select id from public.people limit 1), (select id from public.work_patterns limit 1), current_date);
+      ok := false;
+    exception when insufficient_privilege or not_null_violation then ok := true;
+    end;
+    res := res || format('%s  viewer  cannot assign a pattern to a person', case when ok then 'PASS' else 'FAIL' end);
+    begin
+      insert into public.person_day_hours (person_id, work_date, end_time) values ((select id from public.people limit 1), current_date, '14:00');
+      ok := false;
+    exception when insufficient_privilege or not_null_violation then ok := true;
+    end;
+    res := res || format('%s  viewer  cannot add a one-off change of hours', case when ok then 'PASS' else 'FAIL' end);
+    update public.people set user_id = viewer_id;
+    get diagnostics n = row_count;
+    res := res || format('%s  viewer  cannot link a person to a login', case when n = 0 then 'PASS' else 'FAIL' end);
 
     select count(*) into n from public.test_areas;
     res := res || format('%s  viewer  can read test areas', case when n > 0 then 'PASS' else 'FAIL' end);
@@ -413,6 +458,29 @@ begin
       select count(*) into n from public.assignments a join public.recurring_jobs r on r.id = a.recurring_id where r.title = 'RLS repeat';
       res := res || format('%s  admin   recurring: 10 working days − 1 removed − 1 absent = 8 jobs, no duplicates (got %s)',
         case when n = 8 then 'PASS' else 'FAIL' end, n);
+
+      -- Individual hours: a Mon–Thu pattern (Friday off) + one day off → recurring skips them
+      insert into public.work_patterns (name) values ('RLS Mon–Thu') returning id into pat;
+      insert into public.work_pattern_days (pattern_id, weekday, works, start_time, end_time, break_time, break_minutes, lunch_time, lunch_minutes)
+      select pat, d, d <= 4, case when d <= 4 then time '07:00' end, case when d <= 4 then time '15:00' end,
+             case when d <= 4 then time '09:30' end, case when d <= 4 then 15 else 0 end, case when d <= 4 then time '12:00' end, case when d <= 4 then 30 else 0 end
+      from generate_series(1, 7) d;
+      res := res || 'PASS  admin   can add a work pattern with its weekdays'::text;
+      insert into public.people (name) values ('RLS part-timer') returning id into pid3;
+      insert into public.person_work_patterns (person_id, pattern_id, effective_from, end_time) values (pid3, pat, current_date - 7, '14:30');
+      insert into public.person_day_hours (person_id, work_date, works)
+      select pid3, d::date, false from generate_series(current_date, current_date + 13, interval '1 day') d
+      where extract(isodow from d) <= 4 order by d limit 1;
+      res := res || 'PASS  admin   can assign a pattern (with an override) and add a one-off day change'::text;
+      insert into public.recurring_jobs (title, person_id, task_id, pattern, start_date, end_date)
+      values ('RLS part-time repeat', pid3, (select id from public.tasks where name = 'Training'), 'workdays', current_date, current_date + 13);
+      perform public.extend_recurring_jobs(current_date + 30);
+      select count(*) into n from public.assignments a join public.recurring_jobs r on r.id = a.recurring_id where r.title = 'RLS part-time repeat';
+      res := res || format('%s  admin   recurring skips non-working days: 10 working days − 2 Fridays − 1 day off = 7 jobs (got %s)',
+        case when n = 7 then 'PASS' else 'FAIL' end, n);
+      select count(*) into n from public.audit_log
+      where table_name in ('work_patterns', 'work_pattern_days', 'person_work_patterns', 'person_day_hours') and changed_at >= now();
+      res := res || format('%s  admin   working-hours changes written to the change log', case when n >= 4 then 'PASS' else 'FAIL' end);
 
       begin
         insert into public.audit_log (table_name, action) values ('x', 'insert');

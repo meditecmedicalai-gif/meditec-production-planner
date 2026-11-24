@@ -1,5 +1,7 @@
 import { h, mount, toast, reportError, openModal, confirmDialog, field, checkbox, hhmm } from '../ui.js';
 import { supabase } from '../supabase.js';
+import { editPattern } from './hoursEditor.js';
+import { patternSummary } from '../hours.js';
 
 // Admin-only page: working hours, pump models and tasks.
 export async function renderSettings(main, ctx) {
@@ -17,7 +19,7 @@ export async function renderSettings(main, ctx) {
   areaList = areas || [];
   await Promise.all([
     renderTestAreas(testCard, () => renderSettings(main, ctx)),
-    renderHours(hoursCard, ctx),
+    renderPatterns(hoursCard, ctx),
     renderRefList(modelsCard, MODELS),
     renderRefList(typesCard, BUILD_TYPES),
     renderRefList(tasksCard, TASKS),
@@ -25,7 +27,56 @@ export async function renderSettings(main, ctx) {
   ]);
 }
 
-// ------------------------------------------------------------ working hours
+// ------------------------------------------------------------ work patterns
+async function renderPatterns(card, ctx) {
+  const [patterns, days, used] = await Promise.all([
+    supabase.from('work_patterns').select('*').order('sort_order').order('name'),
+    supabase.from('work_pattern_days').select('*'),
+    supabase.from('person_work_patterns').select('person_id, pattern_id, effective_from'),
+  ]);
+  if (patterns.error) return renderHours(card, ctx); // before migration 008
+  if (reportError(days.error || used.error, 'Loading work patterns')) return;
+  const reload = () => { renderPatterns(card, ctx); ctx?.refreshHeader?.(); };
+  const daysOf = (p) => days.data.filter((d) => d.pattern_id === p.id);
+  // people currently on each pattern (latest assignment per person)
+  const current = new Map();
+  for (const u of [...used.data].sort((a, b) => (a.effective_from < b.effective_from ? -1 : 1))) current.set(u.person_id, u.pattern_id);
+  const count = (p) => [...current.values()].filter((id) => id === p.id).length;
+  const onlyDefault = patterns.data.filter((p) => p.is_default).length <= 1;
+
+  const setActive = async (p, active) => {
+    if (!active && p.is_default) { toast('The default pattern can’t be deactivated — make another pattern the default first.', 'error'); return; }
+    const { error } = await supabase.from('work_patterns').update({ active }).eq('id', p.id);
+    if (!reportError(error, 'Saving')) reload();
+  };
+  const makeDefault = async (p) => {
+    const { error: e1 } = await supabase.from('work_patterns').update({ is_default: false }).eq('is_default', true);
+    if (reportError(e1, 'Saving')) return;
+    const { error: e2 } = await supabase.from('work_patterns').update({ is_default: true, active: true }).eq('id', p.id);
+    if (!reportError(e2, 'Saving')) { toast(`${p.name} is now the default.`, 'success'); reload(); }
+  };
+
+  mount(card,
+    h('div', { class: 'card-head' }, h('h2', {}, 'Work patterns'),
+      h('button', { class: 'btn btn-primary btn-sm', onclick: () => editPattern({ pattern: null, days: [], onSaved: reload }) }, '+ New pattern')),
+    h('p', { class: 'muted small' }, 'Named working hours (start, finish, break and lunch), which can differ per weekday and mark non-working days. The default pattern applies to anyone without one. Give each person their pattern — and any personal changes — on the People page.'),
+    h('ul', { class: 'ref-list pattern-list' }, patterns.data.map((p) => h('li', { class: p.active ? '' : 'inactive' },
+      h('div', { class: 'ref-main' },
+        h('b', { class: 'ref-name' }, p.name),
+        p.is_default ? h('span', { class: 'tag tag-accent' }, 'default') : null,
+        p.active ? null : h('span', { class: 'tag tag-muted' }, 'inactive'),
+        h('span', { class: 'muted small' }, p.is_default ? `everyone without a pattern${count(p) ? ` + ${count(p)} assigned` : ''}` : `${count(p)} ${count(p) === 1 ? 'person' : 'people'}`),
+        h('div', { class: 'pattern-summary' }, patternSummary(daysOf(p))),
+        p.notes ? h('div', { class: 'muted small' }, p.notes) : null),
+      h('div', { class: 'ref-actions' },
+        h('button', { class: 'btn btn-sm', onclick: () => editPattern({ pattern: p, days: daysOf(p), onSaved: reload, isOnlyDefault: p.is_default && onlyDefault }) }, 'Edit'),
+        p.is_default ? null : h('button', { class: 'btn btn-sm btn-ghost', onclick: () => makeDefault(p) }, 'Make default'),
+        p.is_default ? null : h('button', { class: 'btn btn-sm btn-ghost', onclick: () => setActive(p, !p.active) }, p.active ? 'Deactivate' : 'Activate'),
+      )))),
+  );
+}
+
+// before migration 008: one set of working hours
 async function renderHours(card, ctx) {
   const { data, error } = await supabase.from('app_settings').select('*').eq('id', 1).single();
   if (reportError(error, 'Loading working hours')) return;
@@ -293,7 +344,10 @@ async function renderTestAreas(card, reloadAll) {
     return h('div', { class: `area-block ${a.active ? '' : 'inactive'}` },
       h('div', { class: 'area-head' },
         h('div', {},
-          h('b', { class: 'ref-name' }, a.name), h('span', { class: 'tag tag-accent' }, `max ${a.max_pumps} at once — absolute for this area`),
+          h('b', { class: 'ref-name' }, a.name),
+          a.capacity_mode === 'sequential'
+            ? h('span', { class: 'tag tag-accent' }, 'one at a time — a job counts as 1, whatever the quantity')
+            : h('span', { class: 'tag tag-accent' }, `max ${a.max_pumps} at once — absolute for this area`),
           a.active ? null : h('span', { class: 'tag tag-muted' }, 'inactive'),
           h('div', { class: 'muted small' }, `Stations: ${stations.data.filter((e) => e.test_area_id === a.id).map((e) => e.name).join(', ') || 'none — link one under Equipment / test stations'}`),
           h('div', { class: 'muted small' }, `Models (default area, used when no station is set): ${aModels.join(', ') || 'none yet'}`),
@@ -321,6 +375,11 @@ async function renderTestAreas(card, reloadAll) {
     const max = h('input', { type: 'number', min: 1, max: 99, value: a?.max_pumps ?? 1 });
     const notes = h('input', { type: 'text', value: a?.notes ?? '', maxlength: 160 });
     const active = checkbox('Active', a ? a.active : true);
+    const hasMode = !areas.data.length || 'capacity_mode' in areas.data[0];
+    const mode = h('select', {},
+      h('option', { value: 'simultaneous' }, 'Simultaneous — pumps on test at the same moment add up (e.g. Quality Check)'),
+      h('option', { value: 'sequential' }, 'One at a time — a batch is processed pump by pump; a job counts as 1'));
+    mode.value = a?.capacity_mode || 'simultaneous';
     const current = new Set(shared.data.filter((s) => s.test_area_id === a?.id).map((s) => s.task_id));
     const sharedBoxes = tasks.data.filter((t) => t.is_testing).map((t) => ({ id: t.id, ...checkbox(t.name, current.has(t.id)) }));
     const error = h('p', { class: 'form-error', role: 'alert' });
@@ -328,6 +387,7 @@ async function renderTestAreas(card, reloadAll) {
       title: a ? 'Edit test area' : 'Add test area',
       body: h('div', { class: 'stack' },
         h('div', { class: 'form-grid form-grid-2' }, field('Name', name), field('Max pumps on test at once', max)),
+        hasMode ? field('Capacity mode', mode, '"One at a time": e.g. Mediflex ×8 13:30–15:30 is 8 pumps one after another, so the bench is busy, not 8/1. Only overlapping jobs are flagged.') : null,
         field('Notes', notes),
         h('fieldset', { class: 'skills-fieldset' }, h('legend', {}, 'Tasks that run together on the same pumps (count once)'),
           h('div', { class: 'check-grid' }, sharedBoxes.map((b) => b.el)),
@@ -335,6 +395,7 @@ async function renderTestAreas(card, reloadAll) {
         active.el, error),
       actions: [{ label: 'Cancel' }, { label: 'Save', variant: 'primary', onClick: async () => {
         const values = { name: name.value.trim(), max_pumps: Number(max.value), notes: notes.value.trim() || null, active: active.input.checked };
+        if (hasMode) values.capacity_mode = mode.value;
         if (!values.name) { error.textContent = 'Please enter a name.'; return false; }
         if (!Number.isInteger(values.max_pumps) || values.max_pumps < 1) { error.textContent = 'Max pumps must be a whole number (1 or more).'; return false; }
         let id = a?.id;

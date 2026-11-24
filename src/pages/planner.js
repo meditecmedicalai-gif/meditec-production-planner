@@ -4,11 +4,15 @@ import { auth } from '../auth.js';
 import { demandPanel } from './demand.js';
 import { loadSummaryDemand, summaryCard } from './summary.js';
 import { isBackground, coversDay, endDateOf, timeLabel, clashes, hm, pumpLabel, ABSENCE_TYPES } from '../jobs.js';
-import { capacityConfig, capacityForDay, level, stationMismatch } from '../capacity.js';
+import { capacityConfig, capacityForDay, level, stationMismatch, occupancyText } from '../capacity.js';
+import { occupancySvg, occupancyPopover } from './occupancy.js';
 import { describe as describeRepeat, matches as repeatMatches } from '../recurring.js';
 import { editAssignment, editTemplate, deleteTemplate, saveTemplateTimes } from './jobEditor.js';
-import { personDay, placeOn, isTimed, DEFAULT_HOURS, fmtMin } from '../daytime.js';
-import { dayTimeline, dayBar } from './dayTimeline.js';
+import { editDayHours } from './hoursEditor.js';
+import { openExport } from './exportDialog.js';
+import { personDay, placeOn, isTimed, DEFAULT_HOURS, fmtMin, toMin } from '../daytime.js';
+import { makeHours, hoursText, oneOffText, WEEKDAY_NAMES, isoDow } from '../hours.js';
+import { dayTimeline, dayBar, viewRange, jobText } from './dayTimeline.js';
 import {
   toISO, fromISO, addDays, mondayOf, today, isoWeek,
   fmtDayShort, fmtDayLong, fmtWeekday, fmtRange, fmtDate,
@@ -54,12 +58,18 @@ function stepWorkday(iso, dir) {
 export const JOB_COLUMNS = 'id, person_id, work_date, pump_model_id, any_pump, pump_mix, task_id, build_type_id, qty_target, notes, '
   + 'background, start_time, end_time, end_date, equipment_id, recurring_id, recurring_date, recurring_detached, created_at, updated_at';
 
-export async function loadWeek(monday) {
-  const from = toISO(monday);
-  const to = toISO(addDays(monday, 4));
-  const dayBefore = toISO(addDays(monday, -1));
+export function loadWeek(monday) {
+  return loadRange(toISO(monday), toISO(addDays(monday, 4)));
+}
+
+/** Tables added by a later migration: if it hasn't been run yet, carry on without them. */
+const optional = (query) => query.then((r) => (r.error ? { data: [], error: null } : r));
+
+/** Everything the planner needs for the days from..to (ISO dates, inclusive). */
+export async function loadRange(from, to) {
+  const dayBefore = toISO(addDays(fromISO(from), -1));
   const q = {
-    people: supabase.from('people').select('id, name, job_title, active').order('name'),
+    people: supabase.from('people').select('*').order('name'),
     models: supabase.from('pump_models').select('id, name, short_code, active, sort_order, test_area_id').order('sort_order').order('name'),
     tasks: supabase.from('tasks').select('id, name, requires_pump, counts_as_output, is_background, is_testing, allows_any_pump, active, sort_order').order('sort_order').order('name'),
     types: supabase.from('build_types').select('id, name, color, is_default, active, sort_order').order('sort_order').order('name'),
@@ -71,12 +81,16 @@ export async function loadWeek(monday) {
       .order('start_time', { nullsFirst: true }).order('created_at'),
     absences: supabase.from('absences').select('id, person_id, start_date, end_date, absence_type, notes').lte('start_date', to).gte('end_date', from),
     equipment: supabase.from('equipment').select('id, name, notes, active, sort_order, test_area_id').order('sort_order').order('name'),
-    areas: supabase.from('test_areas').select('id, name, max_pumps, active, sort_order').order('sort_order').order('name'),
+    areas: supabase.from('test_areas').select('*').order('sort_order').order('name'),
     limits: supabase.from('test_limits').select('id, test_area_id, name, max_pumps, active, sort_order').order('sort_order').order('name'),
     limitModels: supabase.from('test_limit_models').select('test_limit_id, pump_model_id'),
     shared: supabase.from('test_area_shared_tasks').select('test_area_id, task_id'),
     recurring: supabase.from('recurring_jobs').select('*').eq('active', true).order('created_at'),
     hours: supabase.from('app_settings').select('work_start, work_end, break_time, break_minutes, lunch_time, lunch_minutes').eq('id', 1).maybeSingle(),
+    patterns: optional(supabase.from('work_patterns').select('*').order('sort_order').order('name')),
+    patternDays: optional(supabase.from('work_pattern_days').select('*')),
+    personPatterns: optional(supabase.from('person_work_patterns').select('*').order('effective_from')),
+    dayHours: optional(supabase.from('person_day_hours').select('*').gte('work_date', from).lte('work_date', to)),
   };
   const keys = Object.keys(q);
   const res = await Promise.all(Object.values(q));
@@ -99,6 +113,9 @@ export async function loadWeek(monday) {
     recurring: r.recurring, recurringById: byId(r.recurring),
     areas: r.areas,
     hours: r.hours || DEFAULT_HOURS,
+    from, to,
+    patterns: r.patterns, patternDays: r.patternDays, personPatterns: r.personPatterns, dayHours: r.dayHours,
+    workHours: makeHours({ patterns: r.patterns, patternDays: r.patternDays, personPatterns: r.personPatterns, dayHours: r.dayHours, settings: r.hours }),
     capacity: capacityConfig({
       areas: r.areas, limits: r.limits, limitModels: r.limitModels, sharedTasks: r.shared,
       models: r.models, tasks: r.tasks, equipment: r.equipment,
@@ -137,9 +154,42 @@ export function makeCtx(data) {
       const key = `${personId}|${iso}`;
       if (!dayCache.has(key)) {
         const { attended, background } = this.jobsOn(personId, iso);
-        dayCache.set(key, personDay({ jobs: [...attended, ...background], iso, isBg: (a) => this.isBg(a), hours: data.hours, absent: this.absenceOn(personId, iso) }));
+        dayCache.set(key, personDay({ jobs: [...attended, ...background], iso, isBg: (a) => this.isBg(a), hours: this.hoursFor(personId, iso), absent: this.absenceOn(personId, iso) }));
       }
       return dayCache.get(key);
+    },
+    /** The person's own working hours on a day (pattern → overrides → one-off change). */
+    hoursFor(personId, iso) {
+      return data.workHours.forDay(personId, iso);
+    },
+    /** ⚠ for work on a non-working day, outside the person's hours or across their break / lunch. */
+    hoursWarnings(a, personName, iso) {
+      if (!a.person_id || this.absenceOn(a.person_id, iso)) return [];
+      const first = (personName || 'This person').split(' ')[0];
+      const hrs = this.hoursFor(a.person_id, iso);
+      const bg = this.isBg(a);
+      if (!hrs.works) {
+        if (bg && iso !== a.work_date) return [];
+        if (hrs.oneOff) return [`${first} is not working on ${fmtDayShort(fromISO(iso))} (one-off day off).`];
+        return [`${first} doesn’t work on ${WEEKDAY_NAMES[isoDow(iso) - 1]}s${hrs.pattern ? ` (${hrs.pattern.name})` : ''}.`];
+      }
+      if (bg || !isTimed(a)) return [];
+      const p = placeOn(a, iso);
+      const s0 = Math.max(p.s, 0); const e0 = Math.min(p.e, 24 * 60);
+      const day = personDay({ jobs: [], iso, isBg: () => false, hours: hrs });
+      return s0 < day.ws || e0 > day.we ? [`Outside ${first}’s hours (${hoursText(hrs)}).`] : [];
+    },
+    /** ⏰ notes (no confirmation needed): an attended job that runs across the person's break or lunch. */
+    breakNotes(a, personName, iso) {
+      if (!a.person_id || !isTimed(a) || this.isBg(a) || this.absenceOn(a.person_id, iso)) return [];
+      const hrs = this.hoursFor(a.person_id, iso);
+      if (!hrs.works) return [];
+      const first = (personName || 'This person').split(' ')[0];
+      const p = placeOn(a, iso);
+      const s0 = Math.max(p.s, 0); const e0 = Math.min(p.e, 24 * 60);
+      const day = personDay({ jobs: [], iso, isBg: () => false, hours: hrs });
+      return day.breaks.filter((b) => s0 < b.e && b.s < e0)
+        .map((b) => `Runs across ${first}’s ${b.label.toLowerCase()} (${fmtMin(b.s)}–${fmtMin(b.e)}).`);
     },
     /** Test capacity for a day (cached). */
     capDay(iso) {
@@ -214,7 +264,7 @@ export async function renderPlanner(main) {
   /** All warnings for a job on a day (chips and the Day timeline). */
   const warningsOf = (a, person, iso) => {
     const absence = ctx.absenceOn(person.id, iso);
-    const warnings = ctx.warningsFor(a, person.name);
+    const warnings = [...ctx.warningsFor(a, person.name), ...ctx.hoursWarnings(a, person.name, iso)];
     // Absence: attended work is flagged on every absent day; a background job
     // only on the day it starts (someone has to set it up).
     if (absence && (!ctx.isBg(a) || iso === a.work_date)) warnings.push(`${person.name} is marked ${ABSENCE_TYPES[absence.absence_type] || 'absent'} this day.`);
@@ -232,11 +282,12 @@ export async function renderPlanner(main) {
   const cell = (person, iso) => {
     const absence = ctx.absenceOn(person.id, iso);
     const { attended, background } = ctx.jobsOn(person.id, iso);
-    const skipped = absence ? skippedOn(person, iso) : [];
+    const hrs = ctx.hoursFor(person.id, iso);
+    const skipped = absence || !hrs.works ? skippedOn(person, iso) : [];
     return h('div', { class: 'cell-inner' },
-      absence ? absenceBanner(absence, person) : null,
-      skipped.map((r) => h('div', { class: 'skipped', title: 'This recurring job was not added because the person is absent' },
-        '🔁 ', h('s', {}, r.title || data.taskById.get(r.task_id)?.name || 'Recurring job'), ' — skipped (absent)')),
+      absence ? absenceBanner(absence, person) : hoursBanner(person, iso, hrs),
+      skipped.map((r) => h('div', { class: 'skipped', title: `This recurring job was not added because the person is ${absence ? 'absent' : 'not working'}` },
+        '🔁 ', h('s', {}, r.title || data.taskById.get(r.task_id)?.name || 'Recurring job'), ` — skipped (${absence ? 'absent' : 'not working'})`)),
       attended.map((a) => chip(a, person, absence, iso)),
       background.length ? h('div', { class: 'bg-group' },
         h('span', { class: 'bg-group-label' }, h('span', { 'aria-hidden': 'true' }, '⏱'), ' Running in the background'),
@@ -252,8 +303,32 @@ export async function renderPlanner(main) {
           onclick: () => edit({ person, iso }),
         }, '+ Add'),
         absence ? null : h('button', { class: 'btn btn-xs btn-ghost', title: `Mark ${person.name} absent`, onclick: () => editAbsence({ ctx, person, iso, onSaved: reload }) }, 'Absent'),
+        absence ? null : h('button', { class: 'btn btn-xs btn-ghost', title: `Change ${person.name}’s hours for this day only`, onclick: () => editHours(person, iso) }, 'Hours'),
       ) : null,
     );
+  };
+  const editHours = (person, iso) => editDayHours({
+    person, iso, base: data.workHours.baseFor(person.id, iso), existing: data.workHours.oneOff(person.id, iso), onSaved: reload,
+  });
+
+  /** Non-working day, a one-off change, or hours different from the default pattern. */
+  const hoursBanner = (person, iso, hrs) => {
+    const usual = data.workHours.defaultFor(iso);
+    const click = admin ? { type: 'button', onclick: () => editHours(person, iso) } : {};
+    const tag = admin ? 'button' : 'div';
+    if (!hrs.works) {
+      const why = hrs.oneOff ? 'one-off' : hrs.pattern?.name;
+      return h(tag, { class: 'nonwork', title: `${person.name} is not working on ${fmtDayLong(fromISO(iso))}${why ? ` (${why})` : ''}${hrs.oneOff?.notes ? ` — ${hrs.oneOff.notes}` : ''}`, ...click },
+        'Not working', why ? h('span', { class: 'absence-note' }, why) : null);
+    }
+    if (hrs.oneOff) {
+      return h(tag, { class: 'hours-tag hours-oneoff', title: `${hoursText(hrs)} today${hrs.oneOff.notes ? ` — ${hrs.oneOff.notes}` : ''}`, ...click },
+        '⏰ ', oneOffText(hrs.oneOff), hrs.oneOff.notes ? h('span', { class: 'absence-note' }, hrs.oneOff.notes) : null);
+    }
+    if (hoursText(hrs) !== hoursText(usual) || hrs.override || (hrs.pattern && hrs.pattern.id !== usual.pattern?.id)) {
+      return h('div', { class: 'hours-tag', title: `${person.name}: ${hoursText(hrs)}${hrs.pattern ? ` (${hrs.pattern.name}${hrs.override ? ', own hours' : ''})` : ''}` }, '⏰ ', hoursText(hrs));
+    }
+    return null;
   };
 
   const absenceBanner = (absence, person) => {
@@ -278,20 +353,22 @@ export async function renderPlanner(main) {
     const time = timeLabel(a, iso);
     const continuing = iso !== a.work_date;
     const warnings = warningsOf(a, person, iso);
+    const notes = ctx.breakNotes(a, person.name, iso);
     const label = [pump, type?.name, task?.name, a.qty_target != null ? a.qty_target : null].filter((x) => x != null).join(' · ');
     return h('button', {
       type: 'button',
-      class: `chip ${bg ? 'chip-bg' : 'chip-att'} ${continuing ? 'chip-cont' : ''} ${warnings.length ? 'chip-warn' : ''} ${a.any_pump ? 'chip-any' : ''}`,
+      class: `chip ${bg ? 'chip-bg' : 'chip-att'} ${continuing ? 'chip-cont' : ''} ${warnings.length ? 'chip-warn' : ''} ${notes.length ? 'chip-note' : ''} ${a.any_pump ? 'chip-any' : ''}`,
       style: type ? `--type-color:${type.color}` : false,
       title: [label, bg ? 'Runs in the background (unattended)' : 'Attended — the person works on this', time,
         equip ? `Equipment: ${equip.name}` : null, a.recurring_id ? 'Recurring job' : null, a.notes,
-        ...warnings.map((w) => `⚠ ${w}`)].filter(Boolean).join('\n'),
+        ...warnings.map((w) => `⚠ ${w}`), ...notes.map((w) => `⏰ ${w}`)].filter(Boolean).join('\n'),
       onclick: () => openJob(a, person),
     },
       bg ? h('span', { class: 'bg-badge' }, h('span', { 'aria-hidden': 'true' }, '⏱'), ' Background') : null,
       time ? h('b', { class: 'chip-time chip-when' }, time) : null,
       h('span', { class: 'chip-line' },
         warnings.length ? h('span', { class: 'chip-warn-icon', 'aria-label': 'Warning' }, '!') : null,
+        notes.length ? h('span', { class: 'chip-note-icon', 'aria-label': 'Runs across a break', title: notes.join(' ') }, '⏰') : null,
         a.recurring_id ? h('span', { class: 'chip-repeat', 'aria-label': 'Recurring job', title: 'Recurring job' }, '🔁') : null,
         pump ? h('span', { class: 'chip-model' }, pump) : null,
         type ? typeTag(type) : null,
@@ -304,22 +381,45 @@ export async function renderPlanner(main) {
   };
 
   // ---- test capacity per day
-  const capPills = (iso) => {
+  const capPills = (iso, { graph = true } = {}) => {
     const c = ctx.capDay(iso);
-    // The first (main) area is always shown; other areas only when something is booked on them.
-    const pills = c.areas.filter((a, i) => i === 0 || a.peak > 0).map((a) => {
+    const usual = personDay({ jobs: [], iso, isBg: () => false, hours: data.workHours.defaultFor(iso) });
+    const win = viewRange(usual);
+    const span = (x) => `${fmtMin(x[0])}–${fmtMin(x[1])}`;
+    const pills = c.areas.filter((a, i) => i === 0 || a.peak > 0 || a.untimed.length).map((a) => {
+      if (a.sequential) {
+        // one at a time: show when the bench is busy, not "8/1"
+        const over = a.peak > 1;
+        const batches = a.batches.map((b) => `${fmtMin(b.s)}–${fmtMin(b.e)}: ${ctx.pump(b.job) || 'pumps'} ×${b.pumps}${b.perPump ? ` · ~${b.perPump} min each` : ''}`).join('\n');
+        return h('span', {
+          class: `cap-pill cap-seq ${over ? 'cap-over' : a.busy.length ? 'cap-busy' : 'cap-ok'}`,
+          title: `${a.label} — one pump at a time.\n${batches || 'Free all day'}${over ? `\n⚠ ${a.peak} jobs overlap at ${a.at}` : ''}`,
+        }, a.busy.length ? `${a.label.replace(/ test bench$/i, '')} bench busy ${a.busy.map(span).join(', ')}` : `${a.label} free`,
+          a.batches.length === 1 && a.batches[0].pumps ? h('small', {}, ` ${a.batches[0].pumps} pumps${a.batches[0].perPump ? ` · ~${a.batches[0].perPump} min each` : ''}`) : null,
+          over ? h('small', {}, ` ⚠ ${a.peak} overlap ${a.at}`) : null);
+      }
       const lv = level(a.peak, a.max);
-      return h('span', {
-        class: `cap-pill cap-${lv}`,
-        title: `${a.label} (${a.area.name}): peak ${a.peak} of ${a.max}${a.at && a.peak ? ` at ${a.at}` : ''}`,
-      }, `${a.label} ${a.peak}/${a.max}`, a.peak ? h('small', {}, ` ${a.at}`) : null);
+      const wrap = h('span', { class: 'cap-wrap', tabindex: graph ? 0 : false },
+        h('span', {
+          class: `cap-pill cap-${lv}`,
+          title: graph ? false : `${a.label} (${a.area.name}): peak ${a.peak} of ${a.max}${a.at && a.peak ? ` at ${a.at}` : ''}\n${occupancyText(a.series)}`,
+        }, `${a.label} ${a.peak}/${a.max}`, a.peak ? h('small', {}, ` ${a.at}`) : null),
+        graph && a.peak ? h('span', { class: 'cap-spark', 'aria-hidden': 'true' }, occupancySvg(a.series, { max: a.max, ...win, height: 16 })) : null,
+        graph ? occupancyPopover(a, win) : null);
+      return wrap;
     });
     for (const l of c.limits.filter((x) => x.peak > x.max)) {
       pills.push(h('span', { class: 'cap-pill cap-over', title: `${l.limit.name}: ${l.peak} of ${l.max} at ${l.at}` }, `${l.limit.name} ${l.peak}/${l.max}`, h('small', {}, ` ${l.at}`)));
     }
+    if (c.untimed.length) {
+      pills.push(h('span', {
+        class: 'cap-pill cap-near cap-untimed',
+        title: `Not counted — no times set:\n${c.untimed.map((u) => `• ${jobText(ctx, u.job)} (${personById.get(u.job.person_id)?.name || '—'})`).join('\n')}\nAdd start and end times so they count in the peak.`,
+      }, `⚠ ${c.untimed.length} untimed`, h('small', {}, ' add times')));
+    }
     const detail = [...c.limits.map((l) => `${l.limit.name}: peak ${l.peak}/${l.max}${l.peak ? ` at ${l.at}` : ''}`),
       ...[...c.models.values()].map((m) => `${m.name}: ${m.peak} at ${m.at}`)].join('\n');
-    return h('div', { class: 'cap-cell', title: detail }, pills.length ? pills : h('span', { class: 'muted small' }, '—'));
+    return h('div', { class: 'cap-cell', title: graph ? false : detail }, pills.length ? pills : h('span', { class: 'muted small' }, '—'));
   };
   const hasAreas = data.capacity.areas.length > 0;
 
@@ -340,6 +440,7 @@ export async function renderPlanner(main) {
     h('div', { class: 'planner-actions' },
       view === 'week' ? h('button', { class: 'btn btn-sm', onclick: () => document.getElementById('weekly-summary')?.scrollIntoView({ behavior: 'smooth' }) }, 'Summary ↓') : null,
       h('button', { class: 'btn btn-sm', title: `Print this ${view === 'day' ? 'day' : 'week'} on A4 landscape`, onclick: () => window.print() }, 'Print'),
+      h('button', { class: 'btn btn-sm', title: 'Download a spreadsheet: timesheet, absences, summaries, test capacity', onclick: () => openExport({ weekMonday: monday }) }, 'Export to Excel'),
       admin && view === 'week' ? h('button', { class: 'btn btn-sm', onclick: () => copyLastWeek({ ctx, monday, rows, onDone: reload }) }, 'Copy last week') : null,
     ),
   );
@@ -376,12 +477,12 @@ export async function renderPlanner(main) {
             hasAreas ? h('tr', { class: 'cap-row' },
               h('th', { class: 'sticky-col', scope: 'row' }, 'Test capacity', h('div', { class: 'muted small' }, 'peak pumps on test')),
               isoDays.map((iso) => h('td', { class: `day-cell ${iso === todayISO ? 'is-today' : ''}` }, capPills(iso)))) : null,
-            rows.map((p) => h('tr', { class: p.active ? '' : 'inactive' },
+            rows.map((p) => h('tr', { class: p.active ? '' : 'inactive', 'data-person': p.id },
               h('th', { class: 'sticky-col person-cell', scope: 'row' },
                 h('div', { class: 'person-name' }, p.name, p.active ? null : h('span', { class: 'tag tag-muted' }, 'inactive')),
                 p.job_title ? h('div', { class: 'muted small' }, p.job_title) : null,
               ),
-              isoDays.map((iso) => h('td', { class: `day-cell ${iso === todayISO ? 'is-today' : ''}` }, cell(p, iso))),
+              isoDays.map((iso) => h('td', { class: `day-cell ${iso === todayISO ? 'is-today' : ''} ${ctx.hoursFor(p.id, iso).works ? '' : 'is-offday'}` }, cell(p, iso))),
             ))),
         ))
     : h('div', { class: 'empty' }, admin ? 'Add team members on the People page to start planning.' : 'No team members yet.');
@@ -454,14 +555,15 @@ function dayView({ ctx, rows, iso, isoDays, days, todayISO, admin, hasAreas, cap
   );
   if (!rows.length) return h('section', { class: 'card' }, nav, h('div', { class: 'empty' }, 'No team members yet.'));
   const tl = dayTimeline({
-    ctx, rows, iso, isToday, admin,
+    ctx, rows, iso, isToday, admin, capacity: ctx.capDay(iso),
     onJob: openJob,
     onFree: (person, s, e) => edit({ person, iso, times: { start: fmtMin(s), end: fmtMin(e) } }),
     warningsOf: (a, p) => warningsOf(a, p, iso),
+    notesOf: (a, p) => ctx.breakNotes(a, p.name, iso),
   });
   const card = h('section', { class: 'card card-flush day-timeline' },
     h('div', { class: 'dt-top no-print' }, nav),
-    hasAreas ? h('div', { class: 'dt-cap' }, h('span', { class: 'muted small' }, 'Test capacity: '), capPills(iso)) : null,
+    hasAreas ? h('div', { class: 'dt-cap' }, h('span', { class: 'muted small' }, 'Test capacity: '), capPills(iso, { graph: false })) : null,
     legend,
     tl.el);
   requestAnimationFrame(() => {
