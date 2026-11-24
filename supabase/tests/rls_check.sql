@@ -7,7 +7,7 @@
 -- The whole check is ONE statement. At the end it deliberately stops
 -- with an "error" whose message is the report:
 --
---     RLS CHECK FINISHED: 75 passed, 0 failed ...
+--     RLS CHECK FINISHED: 77 passed, 0 failed ...
 --
 -- Raising that error is what undoes every bit of test data, so nothing
 -- is left behind. Every line should start with PASS.
@@ -59,6 +59,15 @@ begin
     case when exists (select 1 from information_schema.columns
                       where table_schema = 'public' and table_name = 'assignments' and column_name = 'equipment_id')
          then 'PASS' else 'FAIL' end);
+  res := res || format('%s  setup   live updates enabled for the 10 planning tables (004 migration run)',
+    case when (select puballtables from pg_publication where pubname = 'supabase_realtime')
+           or (select count(*) from pg_publication_tables where pubname = 'supabase_realtime' and schemaname = 'public'
+               and tablename in ('assignments','absences','demand_notes','people','person_skills','pump_models','tasks','build_types','equipment','app_settings')) = 10
+         then 'PASS' else 'FAIL' end);
+  res := res || format('%s  setup   change log (audit_log) is never sent as a live update',
+    case when exists (select 1 from pg_publication_tables where pubname = 'supabase_realtime' and tablename = 'audit_log')
+              or coalesce((select puballtables from pg_publication where pubname = 'supabase_realtime'), false)
+         then 'FAIL' else 'PASS' end);
   res := res || format('%s  setup   viewer e-mail found (%s)', case when viewer_id is null then 'FAIL' else 'PASS' end, viewer_email);
   res := res || format('%s  setup   admin e-mail found (%s)',  case when admin_id  is null then 'FAIL' else 'PASS' end, admin_email);
 

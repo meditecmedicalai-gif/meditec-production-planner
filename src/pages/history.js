@@ -1,4 +1,4 @@
-import { h, mount, reportError } from '../ui.js';
+import { h, mount, reportError, loading } from '../ui.js';
 import { supabase } from '../supabase.js';
 import { fromISO, fmtDayShort, fmtDate } from '../dates.js';
 import { ABSENCE_TYPES } from './planner.js';
@@ -106,7 +106,7 @@ function changes(table, oldRow, newRow, L) {
 
 // ---- page
 export async function renderHistory(main) {
-  mount(main, h('h1', { class: 'page-title' }, 'History'), h('p', { class: 'muted' }, 'Loading…'));
+  loading(main, 'list');
   const L = await loadLookups();
   if (reportError(L.error, 'Loading history')) return;
 
