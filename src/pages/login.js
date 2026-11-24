@@ -1,5 +1,8 @@
 import { h, mount } from '../ui.js';
 import { signIn } from '../auth.js';
+import { toggleTheme } from '../theme.js';
+
+const LOGO = 'brand/logo.png';
 
 export function renderLogin(app) {
   const email = h('input', { type: 'email', id: 'email', autocomplete: 'username', required: true });
@@ -16,9 +19,7 @@ export function renderLogin(app) {
       submit.textContent = 'Signing in…';
       const { error: err } = await signIn(email.value, password.value);
       if (err) {
-        error.textContent = /invalid login/i.test(err.message)
-          ? 'Incorrect e-mail or password.'
-          : err.message;
+        error.textContent = /invalid login/i.test(err.message) ? 'Incorrect e-mail or password.' : err.message;
         submit.disabled = false;
         submit.textContent = 'Sign in';
       }
@@ -31,17 +32,32 @@ export function renderLogin(app) {
     submit,
   );
 
-  mount(app, h('main', { class: 'center-page' },
-    h('div', { class: 'card narrow login-card' },
-      h('div', { class: 'login-brand' },
-        h('span', { class: 'brand-mark', 'aria-hidden': 'true' }),
-        h('div', {},
-          h('h1', {}, 'Pump Room Planner'),
-          h('p', { class: 'muted' }, 'Meditec Medical Ltd'),
-        ),
+  // The logo is a drop-in file; if it is missing the text wordmark shows.
+  const artLogo = h('img', { class: 'login-logo-on-art', src: LOGO, alt: 'Meditec — Enhancing patient care' });
+  const wordmark = h('div', { class: 'wordmark-on-art', hidden: true }, 'Meditec');
+  const tagline = h('div', { class: 'tagline', hidden: true }, 'Enhancing patient care');
+  artLogo.addEventListener('error', () => { artLogo.remove(); wordmark.hidden = false; tagline.hidden = false; });
+  const cardLogo = h('img', { class: 'login-logo', src: LOGO, alt: 'Meditec' });
+  cardLogo.addEventListener('error', () => cardLogo.remove());
+
+  mount(app, h('main', { class: 'login' },
+    h('section', { class: 'login-art', 'aria-hidden': 'true' },
+      h('div', {}, artLogo, wordmark),
+      h('div', {},
+        h('h2', {}, 'Pump Room Planner'),
+        h('p', {}, 'Who’s building what, what’s needed, and what’s running overnight — in one place.'),
       ),
-      form,
-      h('p', { class: 'muted small' }, 'Accounts are created by the administrator. Forgotten your password? Ask the administrator to reset it.'),
+      tagline,
+    ),
+    h('section', { class: 'login-side', style: 'position:relative' },
+      h('button', { class: 'theme-toggle', 'aria-label': 'Switch light / dark mode', title: 'Light / dark', onclick: toggleTheme }),
+      h('div', { class: 'login-card' },
+        cardLogo,
+        h('h1', {}, 'Welcome back'),
+        h('p', { class: 'lead' }, 'Sign in to the pump room planner.'),
+        form,
+        h('p', { class: 'foot' }, 'Accounts are created by the administrator. Forgotten your password? Ask the administrator to reset it.'),
+      ),
     ),
   ));
   email.focus();

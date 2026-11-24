@@ -31,7 +31,8 @@ Live site (once deployed): `https://meditecmedicalai-gif.github.io/meditec-produ
    tasks and working hours. It is safe to run again.
 3. Do the same with each later migration in order: [`002_build_types.sql`](supabase/migrations/002_build_types.sql)
    (build types: Production / Trial / Rental / Customer), then
-   [`003_background_jobs.sql`](supabase/migrations/003_background_jobs.sql) (background / overnight jobs, equipment).
+   [`003_background_jobs.sql`](supabase/migrations/003_background_jobs.sql) (background / overnight jobs, equipment), then
+   [`004_realtime.sql`](supabase/migrations/004_realtime.sql) (live updates; refreshed build-type colours).
 
 ### 3. Lock down sign-in
 1. **Authentication → Sign In / Providers** (called *Providers* in some versions):
@@ -89,7 +90,7 @@ error is what undoes all the test data, so nothing is left behind. Every line sh
 ### 7. Sign in
 Open the site, sign in with the account from step 4 and check that:
 - the header shows your name, the **admin** badge and the working hours (08:30–16:30);
-- the Planner page shows the current week, and Settings lists 8 pump models, 4 build types and 9 tasks;
+- you land on **Today**; Settings lists the pump models, build types, tasks and equipment;
 - Elaine's account shows the **viewer** badge and no Settings link.
 
 ---
@@ -125,11 +126,43 @@ npm run dev
 ```
 supabase/migrations/001_init.sql   tables, RLS policies, triggers, seed data
 supabase/tests/rls_check.sql       permission self-test (run in SQL Editor)
-src/main.js                        app shell, routing, sign-in gate
+src/main.js                        app shell (sidebar / tab bar), routing, sign-in gate, live updates
+src/pages/today.js                 Today dashboard (Chart.js charts, timeline)
+src/theme.js, src/realtime.js      light / dark mode, Supabase Realtime subscription
+public/brand/logo.png              drop-in logo
 src/supabase.js                    Supabase client (reads VITE_* config)
 src/pages/                         one file per page
 .github/workflows/deploy.yml       build + deploy to GitHub Pages on push to main
 ```
+
+## Today (home page)
+Everyone lands on **Today** after signing in:
+- a greeting, live clock and **shift bar** (start, break, lunch, finish, "lunch in 25 min");
+- key numbers: units planned this week, open demand, overdue notes, people off today (click to jump);
+- **This week at a glance** in plain English ("38 pumps planned against 65 needed by Friday…") with a
+  planned-vs-needed chart per pump model;
+- **From the floor**: newest open demand notes;
+- charts for build-type mix, the eight-week trend, jobs per person (striped = background) and equipment
+  hours booked — click any chart to open the week planner;
+- **Today on the floor**: an hour-by-hour timeline per person with a red "now" line; background jobs run as
+  a slim striped band underneath; jobs without times share the day.
+Use ‹ › to look at other weeks. Charts are drawn with [Chart.js](https://www.chartjs.org/).
+
+## Live updates
+When someone else changes the plan, absences, demand notes, people or settings, your screen refreshes by
+itself and a short notice says who changed what (e.g. "Elaine added a note"). The sidebar shows **● Live**
+while connected. If you have a form open, the refresh waits until you close it. Live updates use Supabase
+Realtime with the same RLS rules: you only ever receive rows you are allowed to read, and the change log
+is never sent.
+
+## Look & feel
+- **Light / dark mode**: the switch in the sidebar (or *More* on a phone); remembered on each device and
+  defaults to the device's own setting.
+- The sidebar can be collapsed to icons (remembered). On a phone, navigation is a bottom tab bar.
+- Motion is kept subtle and switches off completely when the device is set to "reduce motion".
+- **Logo**: [`public/brand/logo.png`](public/brand/logo.png) (transparent background, about 1040 × 330 px).
+  To change it, replace that one file — no code changes. If the file is missing, a "Meditec" wordmark
+  is shown instead. In dark mode it is shown in light ink automatically.
 
 ## Using the planner
 - **Weekly grid:** people × Mon–Fri. Use ‹ Prev / This week / Next › to move between weeks; the URL
@@ -207,3 +240,4 @@ This is a planning aid, not a controlled QMS record.
 4. ✅ Demand & notes (with build-type filter) and open-demand panel on the planner
 5. ✅ Weekly summary by pump model and build type, History page, A4 print view
 6. ✅ Background & overnight jobs, job times, equipment / test stations
+7. ✅ Today dashboard, charts, live updates, Meditec visual redesign (light / dark)

@@ -1,4 +1,4 @@
-import { h, mount, toast, reportError, openModal, confirmDialog, field, checkbox } from '../ui.js';
+import { h, mount, toast, reportError, openModal, confirmDialog, field, checkbox, loading } from '../ui.js';
 import { supabase } from '../supabase.js';
 import { auth } from '../auth.js';
 import { demandPanel } from './demand.js';
@@ -29,7 +29,7 @@ function weekFromHash() {
 const goToWeek = (monday) => { location.hash = `#/planner?week=${toISO(monday)}`; };
 
 // ------------------------------------------------------------------ data
-async function loadWeek(monday) {
+export async function loadWeek(monday) {
   const from = toISO(monday);
   const to = toISO(addDays(monday, 4));
   const dayBefore = toISO(addDays(monday, -1));
@@ -72,7 +72,7 @@ const JOB_COLUMNS = 'id, person_id, work_date, pump_model_id, task_id, build_typ
   + 'background, start_time, end_time, end_date, equipment_id, created_at, updated_at';
 
 /** Helpers bound to a loaded week. */
-function makeCtx(data) {
+export function makeCtx(data) {
   return {
     ...data,
     absenceOn(personId, iso) {
@@ -128,7 +128,7 @@ export async function renderPlanner(main) {
     mobileDay = i >= 0 ? i : 0;
   }
 
-  mount(main, h('p', { class: 'muted' }, 'Loading week…'));
+  loading(main);
   const [data, panel, summaryDemand, hoursRes] = await Promise.all([
     loadWeek(monday),
     demandPanel(monday, () => renderPlanner(main)),
@@ -308,7 +308,7 @@ export async function renderPlanner(main) {
 
   mount(main,
     printHeader,
-    h('div', { class: 'page-head no-print' }, h('h1', { class: 'page-title' }, 'Planner')),
+    h('div', { class: 'page-head no-print' }, h('h1', { class: 'page-title' }, 'Week planner')),
     toolbar,
     panel,
     legend,
