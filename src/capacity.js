@@ -1,22 +1,31 @@
 // Test capacity: how many pumps are on test at the same time.
 //
-// A job counts when its task is a "testing" task, it has a pump model with a
-// test area, and a quantity (= pumps on test). Its time span comes from the job
-// timing rules (whole day, overnight, multi-day — see jobs.js), and background
-// jobs count like any other.
+// Which test area a job counts towards:
+//  1. Booked on a STATION (equipment) linked to a test area → that area, for
+//     any task, as long as it has a quantity (= pumps).
+//  2. Otherwise: a "testing" task + the pump model's default test area.
+// Its time span comes from the job timing rules (whole day, overnight,
+// multi-day — see jobs.js), and background jobs count like any other.
+// Limit groups (e.g. MediAir + Simplex 6) apply within their own area.
 //
 // Inside an area, tasks marked as sharing pumps (e.g. calibration + quality
 // testing on Medicare / Mediflex) run on the SAME pump at the same time: for the
 // same pump model they count as the largest of them, not the sum. Different
 // models are different pumps and do add up.
 //
-// Each area's maximum is absolute for that area (Main test area: 7). Areas are
+// Each area's maximum is absolute for that area (Quality Check: 7). Areas are
 // separate — there is no limit across areas.
 import { intervalOf } from './jobs.js';
 
 /** Build the lookup structure from loaded rows. */
-export function capacityConfig({ areas = [], limits = [], limitModels = [], sharedTasks = [], models = [], tasks = [] }) {
+export function capacityConfig({ areas = [], limits = [], limitModels = [], sharedTasks = [], models = [], tasks = [], equipment = [] }) {
   const modelArea = new Map(models.filter((m) => m.test_area_id).map((m) => [m.id, m.test_area_id]));
+  const stationArea = new Map(equipment.filter((e) => e.test_area_id).map((e) => [e.id, e.test_area_id]));
+  const areaStations = new Map();
+  for (const e of equipment.filter((x) => x.test_area_id && x.active !== false)) {
+    if (!areaStations.has(e.test_area_id)) areaStations.set(e.test_area_id, []);
+    areaStations.get(e.test_area_id).push(e.name);
+  }
   const shared = new Map();
   for (const s of sharedTasks) {
     if (!shared.has(s.test_area_id)) shared.set(s.test_area_id, new Set());
@@ -31,13 +40,36 @@ export function capacityConfig({ areas = [], limits = [], limitModels = [], shar
     limits: limitSets,
     shared,
     modelArea,
+    stationArea,
+    areaStations,
+    stationName: new Map(equipment.map((e) => [e.id, e.name])),
     modelName: new Map(models.map((m) => [m.id, m.short_code || m.name])),
     testing: new Set(tasks.filter((t) => t.is_testing).map((t) => t.id)),
   };
 }
 
-export const isTestingJob = (j, cfg) =>
-  cfg.testing.has(j.task_id) && j.pump_model_id && cfg.modelArea.has(j.pump_model_id) && (j.qty_target || 0) > 0;
+/** The test area a job counts towards, or null. */
+export function testAreaOf(j, cfg) {
+  if ((j.qty_target || 0) <= 0) return null;
+  const station = j.equipment_id && cfg.stationArea.get(j.equipment_id);
+  if (station) return station;
+  if (cfg.testing.has(j.task_id) && j.pump_model_id && cfg.modelArea.has(j.pump_model_id)) return cfg.modelArea.get(j.pump_model_id);
+  return null;
+}
+export const isTestingJob = (j, cfg) => Boolean(testAreaOf(j, cfg));
+
+/** Name shown for an area: its station(s), else the area name. */
+export const areaLabel = (area, cfg) => cfg.areaStations.get(area.id)?.join(' / ') || area.name;
+
+/** Warning when a pump is booked on a station belonging to another test area. */
+export function stationMismatch(j, cfg) {
+  const station = j.equipment_id && cfg.stationArea.get(j.equipment_id);
+  const home = j.pump_model_id && cfg.modelArea.get(j.pump_model_id);
+  if (!station || !home || station === home) return null;
+  const model = cfg.modelName.get(j.pump_model_id) || 'This pump';
+  const homeArea = cfg.areaById.get(home);
+  return `${model} belongs on ${homeArea ? `the ${areaLabel(homeArea, cfg)}` : 'another test area'}, but is booked on the ${cfg.stationName.get(j.equipment_id)} station.`;
+}
 
 /** Pumps on test among `active` jobs that pass `keep` (shared tasks count once per area and pump model). */
 function count(active, cfg, keep) {
@@ -45,7 +77,7 @@ function count(active, cfg, keep) {
   const sharedMax = new Map();
   for (const j of active) {
     if (!keep(j)) continue;
-    const area = cfg.modelArea.get(j.pump_model_id);
+    const area = testAreaOf(j, cfg);
     const q = j.qty_target || 0;
     const key = `${area}|${j.pump_model_id}`;
     if (cfg.shared.get(area)?.has(j.task_id)) sharedMax.set(key, Math.max(sharedMax.get(key) || 0, q));
@@ -73,7 +105,7 @@ export function capacityInWindow(jobs, cfg, from, to) {
   }
   const pts = [...new Set([from, ...tj.map((x) => x.s), ...tj.map((x) => x.e)])].filter((p) => p >= from && p < to).sort((a, b) => a - b);
 
-  const areas = cfg.areas.map((a) => ({ area: a, peak: 0, at: null, max: a.max_pumps }));
+  const areas = cfg.areas.map((a) => ({ area: a, label: areaLabel(a, cfg), peak: 0, at: null, max: a.max_pumps }));
   const limits = cfg.limits.map((l) => ({ limit: l, area: cfg.areaById.get(l.test_area_id), peak: 0, at: null, max: l.max_pumps }));
   const models = new Map();
   const jobMsgs = new Map();
@@ -92,18 +124,19 @@ export function capacityInWindow(jobs, cfg, from, to) {
     const at = hhmmOf(p);
 
     for (const a of areas) {
-      const inArea = (j) => cfg.modelArea.get(j.pump_model_id) === a.area.id;
+      const inArea = (j) => testAreaOf(j, cfg) === a.area.id;
       const n = count(active, cfg, inArea);
       if (n > a.peak) Object.assign(a, { peak: n, at });
-      if (n > a.max) flag(active, inArea, `${a.area.name}: ${n}/${a.max} pumps at ${at}`);
+      if (n > a.max) flag(active, inArea, `${a.label}: ${n}/${a.max} pumps at ${at}`);
     }
     for (const l of limits) {
-      const inLimit = (j) => l.limit.models.has(j.pump_model_id);
+      // limit groups apply within their own area
+      const inLimit = (j) => l.limit.models.has(j.pump_model_id) && testAreaOf(j, cfg) === l.limit.test_area_id;
       const n = count(active, cfg, inLimit);
       if (n > l.peak) Object.assign(l, { peak: n, at });
       if (n > l.max) flag(active, inLimit, `${l.limit.name}: ${n}/${l.max} on test at ${at}`);
     }
-    for (const m of new Set(active.map((j) => j.pump_model_id))) {
+    for (const m of new Set(active.map((j) => j.pump_model_id).filter(Boolean))) {
       const n = count(active, cfg, (j) => j.pump_model_id === m);
       const cur = models.get(m);
       if (!cur || n > cur.peak) models.set(m, { peak: n, at, name: cfg.modelName.get(m) });

@@ -7,7 +7,7 @@
 -- The whole check is ONE statement. At the end it deliberately stops
 -- with an "error" whose message is the report:
 --
---     RLS CHECK FINISHED: 104 passed, 0 failed ...
+--     RLS CHECK FINISHED: 108 passed, 0 failed ...
 --
 -- Raising that error is what undoes every bit of test data, so nothing
 -- is left behind. Every line should start with PASS.
@@ -79,15 +79,25 @@ begin
   res := res || format('%s  setup   no site-wide limit — each test area is separate (006 migration run)',
     case when exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'app_settings' and column_name = 'max_pumps_on_test')
          then 'FAIL' else 'PASS' end);
-  res := res || format('%s  setup   Main test area: absolute max 7 pumps',
-    case when (select max_pumps from public.test_areas where name = 'Main test area') = 7 then 'PASS' else 'FAIL' end);
+  res := res || format('%s  setup   Quality Check area (renamed from Main test area): absolute max 7 pumps',
+    case when (select max_pumps from public.test_areas where name = 'Quality Check') = 7 then 'PASS' else 'FAIL' end);
+  res := res || format('%s  setup   equipment can be linked to a test area (007 migration run)',
+    case when exists (select 1 from information_schema.columns
+                      where table_schema = 'public' and table_name = 'equipment' and column_name = 'test_area_id')
+         then 'PASS' else 'FAIL' end);
+  res := res || format('%s  setup   "Quality Check" station counts towards the Quality Check area',
+    case when exists (select 1 from public.equipment e join public.test_areas a on a.id = e.test_area_id
+                      where e.name = 'Quality Check' and a.name = 'Quality Check') then 'PASS' else 'FAIL' end);
+  res := res || format('%s  setup   "Medicare / Mediflex test bench" station counts towards the Medicare / Mediflex area',
+    case when exists (select 1 from public.equipment e join public.test_areas a on a.id = e.test_area_id
+                      where e.name = 'Medicare / Mediflex test bench' and a.name = 'Medicare / Mediflex test area') then 'PASS' else 'FAIL' end);
   res := res || format('%s  setup   Medicare / Mediflex area separate: max 1, calibration + quality testing count once',
     case when (select max_pumps from public.test_areas where name = 'Medicare / Mediflex test area') = 1
           and (select count(*) from public.test_area_shared_tasks s join public.test_areas a on a.id = s.test_area_id
                join public.tasks k on k.id = s.task_id
                where a.name = 'Medicare / Mediflex test area' and k.name in ('Functional test / calibration', 'Quality testing')) = 2
          then 'PASS' else 'FAIL' end);
-  res := res || format('%s  setup   MATS and Bari-Med 1 have no limit group (count towards Main only)',
+  res := res || format('%s  setup   MATS and Bari-Med 1 have no limit group (count towards Quality Check only)',
     case when exists (select 1 from public.test_limit_models x join public.pump_models m on m.id = x.pump_model_id
                       where m.name in ('MediAir Turn Sense (MATS)', 'Bari-Med 1')) then 'FAIL' else 'PASS' end);
   res := res || format('%s  setup   viewer e-mail found (%s)', case when viewer_id is null then 'FAIL' else 'PASS' end, viewer_email);
@@ -181,6 +191,10 @@ begin
     update public.equipment set notes = 'hacked';
     get diagnostics n = row_count;
     res := res || format('%s  viewer  cannot edit equipment', case when n = 0 then 'PASS' else 'FAIL' end);
+
+    update public.equipment set test_area_id = null where test_area_id is not null;
+    get diagnostics n = row_count;
+    res := res || format('%s  viewer  cannot change which test area a station counts towards', case when n = 0 then 'PASS' else 'FAIL' end);
 
     begin
       insert into public.test_areas (name, max_pumps) values ('RLS test area', 3);
