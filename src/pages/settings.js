@@ -116,11 +116,14 @@ const EQUIPMENT = {
   table: 'equipment',
   title: 'Equipment / test stations',
   singular: 'equipment item',
-  help: 'Jobs can be linked to one item; the planner warns when the same item is booked at overlapping times.',
-  columns: 'id, name, notes, active, sort_order',
+  help: 'Jobs can be linked to one item; the planner warns when the same item is booked at overlapping times. Link a station to a test area to count the pumps booked on it towards that area.',
+  columns: 'id, name, notes, test_area_id, active, sort_order',
   flags: [],
   extraFields: [
-    { key: 'notes', label: 'Notes', hint: 'Optional, e.g. location or capacity', maxlength: 60 },
+    { key: 'notes', label: 'Notes', hint: 'Optional, e.g. location or capacity', maxlength: 80 },
+    { key: 'test_area_id', label: 'Test area (station)', type: 'select', options: () => areaList,
+      hint: 'Jobs booked on this station count towards this test area — for any task with a pump quantity.',
+      show: (v) => (v ? `🧪 counts towards ${areaList.find((a) => a.id === v)?.name || 'test area'}` : null) },
   ],
 };
 
@@ -268,15 +271,16 @@ function editRef(cfg, row, onSaved, nextSortOrder) {
 
 // ----------------------------------------------------- test areas & limits
 async function renderTestAreas(card, reloadAll) {
-  const [areas, limits, limitModels, shared, models, tasks] = await Promise.all([
+  const [areas, limits, limitModels, shared, models, tasks, stations] = await Promise.all([
     supabase.from('test_areas').select('*').order('sort_order').order('name'),
     supabase.from('test_limits').select('*').order('sort_order').order('name'),
     supabase.from('test_limit_models').select('test_limit_id, pump_model_id'),
     supabase.from('test_area_shared_tasks').select('test_area_id, task_id'),
     supabase.from('pump_models').select('id, name, short_code, test_area_id, active').order('sort_order'),
     supabase.from('tasks').select('id, name, is_testing, active').order('sort_order'),
+    supabase.from('equipment').select('id, name, test_area_id, active').order('sort_order'),
   ]);
-  const err = [areas, limits, limitModels, shared, models, tasks].find((r) => r.error)?.error;
+  const err = [areas, limits, limitModels, shared, models, tasks, stations].find((r) => r.error)?.error;
   if (reportError(err, 'Loading test areas')) return;
   const modelName = new Map(models.data.map((m) => [m.id, m.name]));
   const taskName = new Map(tasks.data.map((t) => [t.id, t.name]));
@@ -291,7 +295,8 @@ async function renderTestAreas(card, reloadAll) {
         h('div', {},
           h('b', { class: 'ref-name' }, a.name), h('span', { class: 'tag tag-accent' }, `max ${a.max_pumps} at once — absolute for this area`),
           a.active ? null : h('span', { class: 'tag tag-muted' }, 'inactive'),
-          h('div', { class: 'muted small' }, `Models: ${aModels.join(', ') || 'none yet (set a default test area on each pump model)'}`),
+          h('div', { class: 'muted small' }, `Stations: ${stations.data.filter((e) => e.test_area_id === a.id).map((e) => e.name).join(', ') || 'none — link one under Equipment / test stations'}`),
+          h('div', { class: 'muted small' }, `Models (default area, used when no station is set): ${aModels.join(', ') || 'none yet'}`),
           aShared.length ? h('div', { class: 'muted small' }, `Counted once when run together on the same pump: ${aShared.join(' + ')}`) : null,
         ),
         h('div', { class: 'ref-actions' },
@@ -406,7 +411,7 @@ async function renderTestAreas(card, reloadAll) {
     h('div', { class: 'card-head' },
       h('h2', {}, 'Test areas & limits'),
       h('button', { class: 'btn btn-primary btn-sm', onclick: () => editArea(null) }, '+ Add test area')),
-    h('p', { class: 'muted small' }, 'Pumps are tested several at a time. The planner adds up testing jobs (quantity = pumps on test) at overlapping times — including overnight and background jobs — and warns when an area or a limit group is exceeded. Each area is separate: its maximum is the absolute limit for that area. Models without a limit group (e.g. MATS, Bari-Med 1) just count towards their area. Mark testing tasks under Tasks, and give each pump model a default test area.'),
+    h('p', { class: 'muted small' }, 'Pumps are tested several at a time. A job counts towards a test area when it is booked on a station linked to that area (any task with a pump quantity); without a station, a testing task counts towards the pump model’s default area. The planner adds up overlapping jobs — including overnight and background jobs — and warns when an area or a limit group is exceeded, or when a pump is booked on another area’s station. Each area is separate: its maximum is absolute for that area.'),
     areas.data.length ? h('div', { class: 'stack' }, areas.data.map(areaBlock)) : h('p', { class: 'empty' }, 'No test areas yet.'),
   );
 }

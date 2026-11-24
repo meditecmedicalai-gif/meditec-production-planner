@@ -4,7 +4,7 @@ import { auth } from '../auth.js';
 import { demandPanel } from './demand.js';
 import { loadSummaryDemand, summaryCard } from './summary.js';
 import { isBackground, coversDay, endDateOf, timeLabel, clashes, hm, pumpLabel, ABSENCE_TYPES } from '../jobs.js';
-import { capacityConfig, capacityForDay, level } from '../capacity.js';
+import { capacityConfig, capacityForDay, level, stationMismatch } from '../capacity.js';
 import { describe as describeRepeat, matches as repeatMatches } from '../recurring.js';
 import { editAssignment, editTemplate, deleteTemplate, saveTemplateTimes } from './jobEditor.js';
 import {
@@ -47,7 +47,7 @@ export async function loadWeek(monday) {
       .lte('work_date', to).or(`work_date.gte.${dayBefore},end_date.gte.${from}`)
       .order('start_time', { nullsFirst: true }).order('created_at'),
     absences: supabase.from('absences').select('id, person_id, start_date, end_date, absence_type, notes').lte('start_date', to).gte('end_date', from),
-    equipment: supabase.from('equipment').select('id, name, notes, active, sort_order').order('sort_order').order('name'),
+    equipment: supabase.from('equipment').select('id, name, notes, active, sort_order, test_area_id').order('sort_order').order('name'),
     areas: supabase.from('test_areas').select('id, name, max_pumps, active, sort_order').order('sort_order').order('name'),
     limits: supabase.from('test_limits').select('id, test_area_id, name, max_pumps, active, sort_order').order('sort_order').order('name'),
     limitModels: supabase.from('test_limit_models').select('test_limit_id, pump_model_id'),
@@ -76,7 +76,7 @@ export async function loadWeek(monday) {
     areas: r.areas,
     capacity: capacityConfig({
       areas: r.areas, limits: r.limits, limitModels: r.limitModels, sharedTasks: r.shared,
-      models: r.models, tasks: r.tasks,
+      models: r.models, tasks: r.tasks, equipment: r.equipment,
     }),
   };
 }
@@ -128,12 +128,13 @@ export function makeCtx(data) {
       if (task?.requires_pump && !a.any_pump && model && !data.skills.has(`${a.person_id}|${a.pump_model_id}`)) {
         out.push(`${personName} is not trained on ${model.name}.`);
       }
+      const wrongStation = stationMismatch(a, data.capacity);
+      if (wrongStation) out.push(wrongStation);
       return out;
     },
   };
 }
 
-const areaShort = (name) => name.replace(/\s*test area$/i, '');
 
 // ------------------------------------------------------------------ page
 export async function renderPlanner(main) {
@@ -263,8 +264,8 @@ export async function renderPlanner(main) {
       const lv = level(a.peak, a.max);
       return h('span', {
         class: `cap-pill cap-${lv}`,
-        title: `${a.area.name}: peak ${a.peak} of ${a.max}${a.at && a.peak ? ` at ${a.at}` : ''}`,
-      }, `${areaShort(a.area.name)} ${a.peak}/${a.max}`, a.peak ? h('small', {}, ` ${a.at}`) : null);
+        title: `${a.label} (${a.area.name}): peak ${a.peak} of ${a.max}${a.at && a.peak ? ` at ${a.at}` : ''}`,
+      }, `${a.label} ${a.peak}/${a.max}`, a.peak ? h('small', {}, ` ${a.at}`) : null);
     });
     for (const l of c.limits.filter((x) => x.peak > x.max)) {
       pills.push(h('span', { class: 'cap-pill cap-over', title: `${l.limit.name}: ${l.peak} of ${l.max} at ${l.at}` }, `${l.limit.name} ${l.peak}/${l.max}`, h('small', {}, ` ${l.at}`)));

@@ -322,7 +322,7 @@ export async function renderToday(main) {
           const nowEl = h('b', {}, '0');
           areaRows.set(a.area.id, { fillEl, nowEl, max: a.max });
           return h('a', { class: 'ta-row', href: `#/planner?week=${toISO(thisMonday)}` },
-            h('div', { class: 'ta-head' }, h('span', {}, a.area.name), h('span', {}, nowEl, ` / ${a.max} now`)),
+            h('div', { class: 'ta-head' }, h('span', {}, a.label), h('span', {}, nowEl, ` / ${a.max} now`)),
             h('div', { class: 'ta-bar' }, fillEl),
             h('div', { class: `ta-peak cap-${level(a.peak, a.max)}` }, a.peak ? `Peak today ${a.peak}/${a.max} at ${a.at}` : 'Nothing on test today'));
         }),

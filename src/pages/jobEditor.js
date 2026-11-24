@@ -3,7 +3,7 @@
 import { h, mount, toast, reportError, openModal, confirmDialog, field, checkbox } from '../ui.js';
 import { supabase } from '../supabase.js';
 import { endDateOf, timeLabel, overlaps, hm, ABSENCE_TYPES } from '../jobs.js';
-import { capacityForDay, isTestingJob } from '../capacity.js';
+import { capacityForDay, isTestingJob, stationMismatch } from '../capacity.js';
 import { PATTERNS, describe as describeRepeat, isoDow, JOB_FIELDS, pick } from '../recurring.js';
 import { toISO, fromISO, addDays, today, fmtDayShort, fmtDayLong } from '../dates.js';
 
@@ -215,6 +215,8 @@ export function editAssignment({ ctx, person, iso, assignment, isoDays, personBy
         for (const m of ctx.clashWarnings(job, personById)) if (!msgs.includes(m)) msgs.push(m);
       }
     }
+    const wrongStation = first && stationMismatch(first, ctx.capacity);
+    if (wrongStation) msgs.push(wrongStation);
     msgs.push(...capacityWarnings());
     mount(warnBox, msgs.map((m) => h('p', { class: 'warn-box' }, `⚠ ${m}`)));
     return msgs;
@@ -477,7 +479,7 @@ export function editTemplate({ ctx, template, personById, onSaved }) {
       h('div', { class: 'form-grid form-grid-2' }, field('Pump model', pumps.modelSel), field('Build type', typeSel)),
       pumps.mixBox,
       field('Quantity', qty),
-      h('div', { class: 'form-grid form-grid-2' }, field('Runs', bgSel), field('Equipment', equipSel)),
+      h('div', { class: 'form-grid form-grid-2' }, field('Runs', bgSel), field('Equipment / test station', equipSel)),
       h('fieldset', { class: 'skills-fieldset' }, h('legend', {}, 'Repeat'), field('Starts on', startDate), repeat.el),
       field('Notes', notes),
       template ? h('p', { class: 'muted small' }, 'Saving updates this job from today onwards; past jobs stay as they were.') : null,
