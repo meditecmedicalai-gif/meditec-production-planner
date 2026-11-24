@@ -7,7 +7,7 @@
 -- The whole check is ONE statement. At the end it deliberately stops
 -- with an "error" whose message is the report:
 --
---     RLS CHECK FINISHED: 77 passed, 0 failed ...
+--     RLS CHECK FINISHED: 104 passed, 0 failed ...
 --
 -- Raising that error is what undoes every bit of test data, so nothing
 -- is left behind. Every line should start with PASS.
@@ -27,6 +27,8 @@ declare
   other_note uuid;
   pid  uuid;
   t    record;
+  missing text;
+  pid2 uuid;
   passed int;
   failed int;
 begin
@@ -59,15 +61,35 @@ begin
     case when exists (select 1 from information_schema.columns
                       where table_schema = 'public' and table_name = 'assignments' and column_name = 'equipment_id')
          then 'PASS' else 'FAIL' end);
-  res := res || format('%s  setup   live updates enabled for the 10 planning tables (004 migration run)',
-    case when (select puballtables from pg_publication where pubname = 'supabase_realtime')
-           or (select count(*) from pg_publication_tables where pubname = 'supabase_realtime' and schemaname = 'public'
-               and tablename in ('assignments','absences','demand_notes','people','person_skills','pump_models','tasks','build_types','equipment','app_settings')) = 10
-         then 'PASS' else 'FAIL' end);
+  select string_agg(tb, ', ' order by tb) into missing
+  from unnest(array['assignments','absences','demand_notes','people','person_skills','pump_models','tasks','build_types',
+                    'equipment','app_settings','test_areas','test_area_shared_tasks','test_limits','test_limit_models',
+                    'recurring_jobs','recurring_exceptions']) as tb
+  where not coalesce((select puballtables from pg_publication where pubname = 'supabase_realtime'), false)
+    and not exists (select 1 from pg_publication_tables p where p.pubname = 'supabase_realtime' and p.schemaname = 'public' and p.tablename = tb);
+  res := res || case when missing is null
+    then 'PASS  setup   live updates enabled for all 16 planning tables'
+    else 'FAIL  setup   live updates missing for: ' || missing || ' (run 005, or Dashboard → Database → Publications → supabase_realtime)' end;
+  res := res || format('%s  setup   test areas, limits and recurring jobs exist (005 migration run)',
+    case when to_regclass('public.recurring_jobs') is not null and to_regclass('public.test_limits') is not null then 'PASS' else 'FAIL' end);
   res := res || format('%s  setup   change log (audit_log) is never sent as a live update',
     case when exists (select 1 from pg_publication_tables where pubname = 'supabase_realtime' and tablename = 'audit_log')
               or coalesce((select puballtables from pg_publication where pubname = 'supabase_realtime'), false)
          then 'FAIL' else 'PASS' end);
+  res := res || format('%s  setup   no site-wide limit — each test area is separate (006 migration run)',
+    case when exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'app_settings' and column_name = 'max_pumps_on_test')
+         then 'FAIL' else 'PASS' end);
+  res := res || format('%s  setup   Main test area: absolute max 7 pumps',
+    case when (select max_pumps from public.test_areas where name = 'Main test area') = 7 then 'PASS' else 'FAIL' end);
+  res := res || format('%s  setup   Medicare / Mediflex area separate: max 1, calibration + quality testing count once',
+    case when (select max_pumps from public.test_areas where name = 'Medicare / Mediflex test area') = 1
+          and (select count(*) from public.test_area_shared_tasks s join public.test_areas a on a.id = s.test_area_id
+               join public.tasks k on k.id = s.task_id
+               where a.name = 'Medicare / Mediflex test area' and k.name in ('Functional test / calibration', 'Quality testing')) = 2
+         then 'PASS' else 'FAIL' end);
+  res := res || format('%s  setup   MATS and Bari-Med 1 have no limit group (count towards Main only)',
+    case when exists (select 1 from public.test_limit_models x join public.pump_models m on m.id = x.pump_model_id
+                      where m.name in ('MediAir Turn Sense (MATS)', 'Bari-Med 1')) then 'FAIL' else 'PASS' end);
   res := res || format('%s  setup   viewer e-mail found (%s)', case when viewer_id is null then 'FAIL' else 'PASS' end, viewer_email);
   res := res || format('%s  setup   admin e-mail found (%s)',  case when admin_id  is null then 'FAIL' else 'PASS' end, admin_email);
 
@@ -159,6 +181,30 @@ begin
     update public.equipment set notes = 'hacked';
     get diagnostics n = row_count;
     res := res || format('%s  viewer  cannot edit equipment', case when n = 0 then 'PASS' else 'FAIL' end);
+
+    begin
+      insert into public.test_areas (name, max_pumps) values ('RLS test area', 3);
+      ok := false;
+    exception when insufficient_privilege then ok := true;
+    end;
+    res := res || format('%s  viewer  cannot add test areas', case when ok then 'PASS' else 'FAIL' end);
+
+    update public.test_limits set max_pumps = 99;
+    get diagnostics n = row_count;
+    res := res || format('%s  viewer  cannot change test limits', case when n = 0 then 'PASS' else 'FAIL' end);
+
+    begin
+      insert into public.recurring_jobs (task_id, pattern) values ((select id from public.tasks limit 1), 'daily');
+      ok := false;
+    exception when insufficient_privilege then ok := true;
+    end;
+    res := res || format('%s  viewer  cannot add recurring jobs', case when ok then 'PASS' else 'FAIL' end);
+
+    select public.extend_recurring_jobs(current_date + 14) into n;
+    res := res || format('%s  viewer  cannot generate recurring jobs', case when n = 0 then 'PASS' else 'FAIL' end);
+
+    select count(*) into n from public.test_areas;
+    res := res || format('%s  viewer  can read test areas', case when n > 0 then 'PASS' else 'FAIL' end);
 
     update public.tasks set is_background = not is_background;
     get diagnostics n = row_count;
@@ -313,6 +359,46 @@ begin
       exception when check_violation then ok := true;
       end;
       res := res || format('%s  admin   end date before start date is rejected', case when ok then 'PASS' else 'FAIL' end);
+
+      -- Test areas
+      insert into public.test_areas (name, max_pumps) values ('RLS test area', 3);
+      insert into public.test_limits (test_area_id, name, max_pumps)
+      values ((select id from public.test_areas where name = 'RLS test area'), 'RLS group', 2);
+      insert into public.test_limit_models (test_limit_id, pump_model_id)
+      values ((select id from public.test_limits where name = 'RLS group'), (select id from public.pump_models order by sort_order limit 1));
+      res := res || 'PASS  admin   can add test areas, limit groups and their models'::text;
+      select count(*) into n from public.audit_log where table_name = 'test_limit_models' and changed_at >= now();
+      res := res || format('%s  admin   test limit change written to audit log', case when n >= 1 then 'PASS' else 'FAIL' end);
+
+      -- Any / mixed pump
+      insert into public.assignments (person_id, work_date, task_id, any_pump, pump_mix)
+      values (pid, current_date, (select id from public.tasks where allows_any_pump order by sort_order limit 1), true,
+              '[{"qty": 2}]'::jsonb);
+      res := res || 'PASS  admin   "Any / mixed pump" repair job saved'::text;
+      begin
+        insert into public.assignments (person_id, work_date, task_id, any_pump)
+        values (pid, current_date, (select id from public.tasks where requires_pump and not allows_any_pump order by sort_order limit 1), true);
+        ok := false;
+      exception when check_violation then ok := true;
+      end;
+      res := res || format('%s  admin   "Any / mixed pump" refused on a non-repair task', case when ok then 'PASS' else 'FAIL' end);
+
+      -- Recurring: every working day for 14 days, one removed date, one absent day
+      insert into public.people (name) values ('RLS repeat person') returning id into pid2;
+      insert into public.recurring_jobs (title, person_id, task_id, pattern, start_date, end_date)
+      values ('RLS repeat', pid2, (select id from public.tasks where name = 'Training'), 'workdays', current_date, current_date + 13);
+      insert into public.recurring_exceptions (recurring_id, skip_date)
+      select id, (select d from generate_series(current_date, current_date + 13, interval '1 day') d
+                  where extract(isodow from d) <= 5 order by d limit 1)::date
+      from public.recurring_jobs where title = 'RLS repeat';
+      insert into public.absences (person_id, start_date, end_date, absence_type)
+      select pid2, d::date, d::date, 'holiday' from generate_series(current_date, current_date + 13, interval '1 day') d
+      where extract(isodow from d) <= 5 order by d offset 1 limit 1;
+      perform public.extend_recurring_jobs(current_date + 30);
+      perform public.extend_recurring_jobs(current_date + 30);  -- running twice must not duplicate
+      select count(*) into n from public.assignments a join public.recurring_jobs r on r.id = a.recurring_id where r.title = 'RLS repeat';
+      res := res || format('%s  admin   recurring: 10 working days − 1 removed − 1 absent = 8 jobs, no duplicates (got %s)',
+        case when n = 8 then 'PASS' else 'FAIL' end, n);
 
       begin
         insert into public.audit_log (table_name, action) values ('x', 'insert');

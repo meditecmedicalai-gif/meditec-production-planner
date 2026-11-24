@@ -55,6 +55,7 @@
 
 /* ---------------------------------------------------------------- base */
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }
 html, body { margin: 0; }
 body {
   background: var(--bg); color: var(--text);
@@ -658,3 +659,92 @@ button.absence { cursor: pointer; }
   .summary { font-size: 8.5pt; } .summary tr { break-inside: avoid; }
   a[href]::after { content: none; }
 }
+
+/* =====================================================================
+   Phase 8 — background jobs (clearly distinct), test capacity, recurring
+   ===================================================================== */
+
+/* Attended job: solid card, coloured edge, soft shadow. */
+.chip-att { box-shadow: 0 1px 2px rgb(35 26 38 / 8%); }
+
+/* Background job: indented, dashed outline all round, hatched, flat, labelled. */
+.chip.chip-bg {
+  margin-left: .55rem; width: calc(100% - .55rem);
+  border: 2px dashed color-mix(in srgb, var(--type-color) 75%, var(--line-2));
+  border-left: 2px dashed color-mix(in srgb, var(--type-color) 75%, var(--line-2));
+  background:
+    repeating-linear-gradient(135deg, color-mix(in srgb, var(--type-color) 16%, var(--card)) 0 6px, var(--card) 6px 12px);
+  box-shadow: none; padding-top: .3rem;
+}
+.chip.chip-bg:hover { transform: none; box-shadow: none; border-color: var(--type-color); }
+.chip.chip-bg .chip-model, .chip.chip-bg .chip-task { font-style: italic; }
+.bg-badge {
+  align-self: flex-start; display: inline-flex; align-items: center; gap: .25rem;
+  font-size: .66rem; font-weight: 700; letter-spacing: .02em; line-height: 1.5;
+  padding: 0 .5rem; border-radius: 99px; background: var(--ink); color: var(--paper); margin-bottom: .1rem;
+}
+.bg-group { margin-top: .25rem; padding-top: .35rem; border-top: 2px dashed var(--line-2); gap: .3rem; }
+.bg-group-label { font-size: .72rem; font-weight: 700; color: var(--ink-2); display: inline-flex; gap: .3rem; align-items: center; }
+.chip-bg.chip-warn { background: repeating-linear-gradient(135deg, var(--amber-soft) 0 6px, var(--card) 6px 12px); border-color: var(--amber-fill); }
+
+.legend-att, .legend-bg { display: inline-flex; align-items: center; gap: .3rem; font-size: .78rem; padding: .05rem .55rem; border-radius: 7px; }
+.legend-att { border: 1px solid var(--line-2); border-left: 4px solid var(--brand); background: var(--card); box-shadow: 0 1px 2px rgb(35 26 38 / 8%); color: var(--ink-2); }
+.legend-bg { border: 2px dashed var(--muted); color: var(--ink-2);
+  background: repeating-linear-gradient(135deg, var(--card-2) 0 5px, var(--card) 5px 10px); }
+.legend .chip-warn-icon { vertical-align: 1px; }
+
+.chip-repeat { font-size: .8rem; }
+.chip-any .chip-model { font-style: normal; text-decoration: underline dotted; text-underline-offset: 3px; }
+.skipped { font-size: .74rem; color: var(--muted); padding: .2rem .4rem; border: 1px dashed var(--line-2); border-radius: 7px; }
+.skipped s { text-decoration-thickness: 1px; }
+
+/* test capacity */
+.cap-row th, .cap-row td { background: color-mix(in srgb, var(--card-2) 70%, var(--card)); }
+.cap-row .day-cell { padding: .35rem .4rem; }
+.cap-cell { display: flex; flex-wrap: wrap; gap: .25rem; }
+.cap-pill { display: inline-flex; align-items: baseline; gap: .15rem; font-size: .72rem; font-weight: 650; padding: .05rem .45rem; border-radius: 6px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.cap-pill small { font-weight: 500; opacity: .85; }
+.cap-ok { background: var(--ok-soft); color: var(--ok); }
+.cap-near { background: var(--amber-soft); color: var(--amber); }
+.cap-over { background: var(--coral-soft); color: var(--coral); box-shadow: inset 0 0 0 1px var(--coral-fill); }
+.phone-cap { display: flex; flex-wrap: wrap; align-items: center; gap: .3rem; margin: -.2rem 0 .7rem; }
+
+.test-card .test-areas { display: flex; flex-direction: column; gap: 12px; }
+.ta-row { display: block; text-decoration: none; color: inherit; padding: 6px 8px; margin: -6px -8px; border-radius: 10px; }
+.ta-row:hover { background: var(--card-2); }
+.ta-head { display: flex; justify-content: space-between; gap: 8px; font-size: 13.5px; font-weight: 600; }
+.ta-head b { font-family: var(--serif); font-size: 18px; }
+.ta-bar { height: 9px; border-radius: 99px; background: var(--card-2); overflow: hidden; margin: 5px 0 3px; }
+.ta-fill { display: block; height: 100%; width: 0; border-radius: 99px; background: var(--ok); transition: width .6s var(--ease); }
+.ta-fill.cap-near { background: var(--amber-fill); } .ta-fill.cap-over { background: var(--coral-fill); }
+.ta-fill.cap-ok { background: var(--teal); }
+.ta-peak { font-size: 12px; background: none !important; box-shadow: none !important; padding: 0; }
+.ta-peak.cap-ok { color: var(--muted); }
+
+/* recurring */
+.recurring-row { display: flex; justify-content: space-between; align-items: center; gap: .4rem 1rem; flex-wrap: wrap; padding: .6rem 1.2rem; }
+.status-unassigned { background: var(--amber-soft); color: var(--amber); }
+.mix-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: .5rem .8rem; }
+.mix-item { display: flex; align-items: center; justify-content: space-between; gap: .5rem; font-size: .85rem; }
+.mix-item input { width: 4.2rem; padding: .3rem .45rem; }
+
+/* settings: test areas */
+.area-block { border: 1px solid var(--line); border-radius: 12px; padding: .8rem 1rem; }
+.area-block.inactive { opacity: .6; }
+.area-head { display: flex; justify-content: space-between; align-items: flex-start; gap: .5rem 1rem; flex-wrap: wrap; }
+.limit-list { margin-top: .5rem; padding-left: .8rem; border-left: 3px solid var(--brand-line); }
+
+@media print {
+  .chip.chip-bg { background: #fff; border-color: #555; margin-left: 2mm; width: calc(100% - 2mm); }
+  .bg-badge { background: #000; color: #fff; font-size: 6pt; }
+  .cap-row th, .cap-row td { background: #f3eef0; }
+  .cap-pill { font-size: 6.5pt; padding: 0 1mm; }
+  .recurring-panel { display: none !important; }
+}
+
+/* recurring panel: editable times */
+.recurring-times { display: flex; align-items: center; gap: .4rem; flex-wrap: wrap; }
+.recurring-times input[type=time] { width: 7.2rem; padding: .32rem .5rem; font-variant-numeric: tabular-nums; border-color: var(--brand-line); background: var(--brand-soft); }
+.recurring-times .rt-label { font-size: .78rem; font-weight: 650; color: var(--ink-2); }
+.recurring-times .rt-hint { font-size: .76rem; color: var(--amber); font-weight: 600; }
+.times-first { padding: .6rem .7rem; border-radius: 12px; background: var(--brand-soft); border: 1px solid var(--brand-line); }

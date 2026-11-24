@@ -3,7 +3,8 @@ import { supabase } from './supabase.js';
 // Live updates via Supabase Realtime. The database only sends a change to
 // users whose RLS policies allow them to read that row (see migration 004).
 export const LIVE_TABLES = ['assignments', 'absences', 'demand_notes', 'people', 'person_skills',
-  'pump_models', 'tasks', 'build_types', 'equipment', 'app_settings'];
+  'pump_models', 'tasks', 'build_types', 'equipment', 'app_settings', 'test_areas', 'test_area_shared_tasks',
+  'test_limits', 'test_limit_models', 'recurring_jobs', 'recurring_exceptions'];
 
 let channel = null;
 

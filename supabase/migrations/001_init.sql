@@ -246,20 +246,15 @@ returns trigger
 language plpgsql security definer
 set search_path = ''
 as $$
+-- Same function in migrations 001 and 005 (re-running either keeps it current).
+-- Works for tables with or without an "id" column.
+declare
+  o jsonb := case when tg_op <> 'INSERT' then to_jsonb(old) end;
+  n jsonb := case when tg_op <> 'DELETE' then to_jsonb(new) end;
 begin
-  if tg_op = 'INSERT' then
-    insert into public.audit_log (table_name, record_id, action, old_data, new_data, changed_by)
-    values (tg_table_name, new.id, 'insert', null, to_jsonb(new), auth.uid());
-    return new;
-  elsif tg_op = 'UPDATE' then
-    insert into public.audit_log (table_name, record_id, action, old_data, new_data, changed_by)
-    values (tg_table_name, new.id, 'update', to_jsonb(old), to_jsonb(new), auth.uid());
-    return new;
-  else
-    insert into public.audit_log (table_name, record_id, action, old_data, new_data, changed_by)
-    values (tg_table_name, old.id, 'delete', to_jsonb(old), null, auth.uid());
-    return old;
-  end if;
+  insert into public.audit_log (table_name, record_id, action, old_data, new_data, changed_by)
+  values (tg_table_name, nullif(coalesce(n, o) ->> 'id', '')::uuid, lower(tg_op), o, n, auth.uid());
+  return coalesce(new, old);
 end;
 $$;
 revoke all on function public.write_audit_log() from public, anon, authenticated;

@@ -94,12 +94,20 @@ returns trigger
 language plpgsql
 set search_path = ''
 as $$
+-- Job rules. The same function is defined in migrations 002 and 005 so that
+-- re-running any migration, in any order, keeps the current rules.
+-- Columns added by later migrations are read via jsonb so this also works
+-- before they exist.
 declare
-  needs_pump boolean;
+  task     jsonb;
+  any_pump boolean := coalesce((to_jsonb(new) ->> 'any_pump')::boolean, false);
 begin
-  select t.requires_pump into needs_pump from public.tasks t where t.id = new.task_id;
-  if needs_pump then
-    if new.pump_model_id is null then
+  select to_jsonb(t) into task from public.tasks t where t.id = new.task_id;
+  if any_pump and not coalesce((task ->> 'allows_any_pump')::boolean, false) then
+    raise exception '"Any / mixed pump" is only allowed for repair-type tasks' using errcode = '23514';
+  end if;
+  if coalesce((task ->> 'requires_pump')::boolean, false) then
+    if new.pump_model_id is null and not any_pump then
       raise exception 'A pump model is required for this task' using errcode = '23502';
     end if;
     if new.build_type_id is null then

@@ -22,11 +22,12 @@ let prefs = (() => {
 const savePrefs = () => { try { localStorage.setItem(KEY, JSON.stringify(prefs)); } catch { /* ignore */ } };
 
 const NONE = 'none'; // "Not specified" build type
+export const ANY_ID = 'any'; // "Any / mixed pump" row
 
 /** Loads the open demand needed for the summary. */
 export async function loadSummaryDemand() {
   const { data, error } = await supabase.from('demand_notes')
-    .select('pump_model_id, build_type_id, quantity, needed_by, status')
+    .select('pump_model_id, any_pump, build_type_id, quantity, needed_by, status')
     .in('status', ['open', 'planned']);
   return { notes: data || [], error };
 }
@@ -46,23 +47,26 @@ export function computeSummary({ monday, assignments, notes, tasks, models, type
 
   for (const a of assignments) {
     const task = taskById.get(a.task_id);
-    if (!a.pump_model_id || !task || !typeOk(a.build_type_id)) continue;
+    const modelKey = a.any_pump ? ANY_ID : a.pump_model_id;
+    if (!modelKey || !task || !typeOk(a.build_type_id)) continue;
     if (a.work_date < from || a.work_date > friday) continue; // counted on its start day only
     if (allTasks ? !task.requires_pump : !task.counts_as_output) continue;
-    cell(a.pump_model_id, a.build_type_id).planned += a.qty_target || 0;
+    cell(modelKey, a.build_type_id).planned += a.qty_target || 0;
   }
   let generalNotes = 0;
   for (const n of notes) {
-    if (!n.pump_model_id) { generalNotes++; continue; }
+    const noteKey = n.any_pump ? ANY_ID : n.pump_model_id;
+    if (!noteKey) { generalNotes++; continue; }
     if (!typeOk(n.build_type_id)) continue;
-    const c = cell(n.pump_model_id, n.build_type_id);
+    const c = cell(noteKey, n.build_type_id);
     if (n.needed_by && n.needed_by <= friday) c.demand += n.quantity || 0;
     else c.later += n.quantity || 0;
   }
 
   const typeOrder = new Map(types.map((t, i) => [t.id, i]));
   const groups = [];
-  for (const m of models) {
+  // "Any / mixed pump" jobs and notes get their own row at the end.
+  for (const m of [...models, { id: ANY_ID, name: 'Any / mixed', short_code: 'Any / mixed' }]) {
     const lines = [...counts.entries()]
       .filter(([k]) => k.startsWith(`${m.id}|`))
       .map(([k, v]) => ({ typeId: k.split('|')[1], ...v }))

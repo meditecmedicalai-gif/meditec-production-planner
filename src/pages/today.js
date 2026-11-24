@@ -9,6 +9,7 @@ import { toISO, fromISO, addDays, mondayOf, today, isoWeek, fmtDayLong, fmtDaySh
 import { loadWeek, makeCtx, ABSENCE_TYPES } from './planner.js';
 import { computeSummary, loadSummaryDemand } from './summary.js';
 import { coversDay, endDateOf, intervalOf, timeLabel, hm } from '../jobs.js';
+import { capacityForDay, capacityAt, level } from '../capacity.js';
 import { token, reducedMotion, onThemeChange } from '../theme.js';
 
 Chart.register(BarController, BarElement, DoughnutController, ArcElement, LineController, LineElement,
@@ -118,7 +119,7 @@ export async function renderToday(main) {
     sameWeek ? null : loadWeek(thisMonday),
     loadSummaryDemand(),
     supabase.from('demand_notes')
-      .select('id, pump_model_id, build_type_id, quantity, needed_by, comment, status, created_by, created_at')
+      .select('id, pump_model_id, any_pump, build_type_id, quantity, needed_by, comment, status, created_by, created_at')
       .in('status', ['open', 'planned']).order('created_at', { ascending: false }).limit(6),
     supabase.from('profiles').select('id, full_name, email'),
     supabase.from('app_settings').select('work_start, work_end, break_time, break_minutes, lunch_time, lunch_minutes').eq('id', 1).maybeSingle(),
@@ -138,7 +139,7 @@ export async function renderToday(main) {
   const planWeek = `#/planner?week=${toISO(monday)}`;
 
   // ---------------------------------------------------------------- numbers
-  const openDemand = demand.notes.filter((n) => n.pump_model_id).reduce((t, n) => t + (n.quantity || 0), 0);
+  const openDemand = demand.notes.filter((n) => n.pump_model_id || n.any_pump).reduce((t, n) => t + (n.quantity || 0), 0);
   const overdue = demand.notes.filter((n) => n.needed_by && n.needed_by < todayISO);
   const absentToday = now.absences.filter((a) => a.start_date <= todayISO && a.end_date >= todayISO);
   const absentPeople = [...new Map(absentToday.map((a) => [a.person_id, a])).values()];
@@ -241,7 +242,7 @@ export async function renderToday(main) {
             avatar(who, note.created_by),
             h('div', {},
               h('div', { class: 'meta' }, h('b', {}, who), ` · ${ago(note.created_at)}`),
-              h('div', { class: 'txt' }, note.comment || `${model?.name || 'General'}${note.quantity != null ? ` × ${note.quantity}` : ''}`),
+              h('div', { class: 'txt' }, note.comment || `${note.any_pump ? 'Any / mixed pump' : model?.name || 'General'}${note.quantity != null ? ` × ${note.quantity}` : ''}`),
               h('span', { class: `due ${late ? 'due-overdue' : soon ? 'due-soon' : ''}` },
                 note.needed_by ? (late ? 'Overdue' : `By ${fmtDayShort(fromISO(note.needed_by))}`) : 'No date'),
               model ? h('span', { class: 'muted small' }, ` ${model.name}${note.quantity != null ? ` × ${note.quantity}` : ''} `) : null,
@@ -309,6 +310,37 @@ export async function renderToday(main) {
     h('h2', {}, 'Equipment this week'), h('p', { class: 'sub' }, 'Hours booked, Monday to Friday (incl. overnight)'),
     equipRows.length ? h('div', { class: 'chart-box', style: `height:${Math.max(110, equipRows.length * 34 + 30)}px` }, equipCanvas) : h('p', { class: 'muted' }, 'No equipment set up.'));
 
+  // ---------------------------------------------------------------- test areas (today)
+  const capToday = capacityForDay(now.assignments, now.capacity, todayISO);
+  const areaRows = new Map();
+  const testCard = h('section', { class: 'card test-card' },
+    h('h2', {}, 'Test areas'),
+    h('p', { class: 'sub' }, 'Pumps on test right now · today’s peak'),
+    capToday.areas.length
+      ? h('div', { class: 'test-areas' }, capToday.areas.map((a) => {
+          const fillEl = h('span', { class: 'ta-fill' });
+          const nowEl = h('b', {}, '0');
+          areaRows.set(a.area.id, { fillEl, nowEl, max: a.max });
+          return h('a', { class: 'ta-row', href: `#/planner?week=${toISO(thisMonday)}` },
+            h('div', { class: 'ta-head' }, h('span', {}, a.area.name), h('span', {}, nowEl, ` / ${a.max} now`)),
+            h('div', { class: 'ta-bar' }, fillEl),
+            h('div', { class: `ta-peak cap-${level(a.peak, a.max)}` }, a.peak ? `Peak today ${a.peak}/${a.max} at ${a.at}` : 'Nothing on test today'));
+        }),
+        capToday.limits.filter((l) => l.peak > l.max).map((l) => h('p', { class: 'warn-box' }, `⚠ ${l.limit.name}: ${l.peak}/${l.max} at ${l.at}`)))
+      : h('p', { class: 'muted' }, auth.isAdmin ? 'Set up test areas in Settings.' : 'No test areas set up.'),
+  );
+  const updateTestNow = (m) => {
+    const [dayStart] = intervalOf({ work_date: todayISO });
+    const c = capacityAt(now.assignments, now.capacity, dayStart + m);
+    for (const a of c.areas) {
+      const r = areaRows.get(a.area.id);
+      if (!r) continue;
+      r.nowEl.textContent = String(a.peak);
+      r.fillEl.style.width = `${Math.min(100, (a.peak / a.max) * 100)}%`;
+      r.fillEl.className = `ta-fill cap-${level(a.peak, a.max)}`;
+    }
+  };
+
   // ---------------------------------------------------------------- today timeline
   const timeline = todayTimeline({ now, todayISO, hours, weekend });
 
@@ -319,7 +351,7 @@ export async function renderToday(main) {
       stats,
       h('div', { class: 'dash-row r-2' }, glance, feedCard),
       h('div', { class: 'dash-row r-3' }, mixCard, trendCard, workCard),
-      h('div', { class: 'dash-row r-2b' }, timeline.card, equipCard),
+      h('div', { class: 'dash-row r-2b' }, timeline.card, h('div', { class: 'dash' }, testCard, equipCard)),
     ),
   );
   enableTips(main);
@@ -419,6 +451,7 @@ export async function renderToday(main) {
     else t = `${dur(we - m)} to go`;
     shiftText.textContent = t;
     timeline.placeNow(m);
+    updateTestNow(m);
   };
   placeNow = timeline.placeNow;
   requestAnimationFrame(() => requestAnimationFrame(tick));
@@ -464,7 +497,7 @@ function todayTimeline({ now, todayISO, hours, weekend }) {
     const warn = now.warningsFor(a, '').length > 0;
     const tl = timeLabel(a, todayISO);
     const tip = [
-      [model?.name, type?.name, task?.name].filter(Boolean).join(' · '),
+      [now.pump(a), type?.name, task?.name].filter(Boolean).join(' · '),
       a.qty_target != null ? `Quantity: ${a.qty_target}` : null,
       tl || (extraCls.includes('untimed') ? 'No set time' : null),
       extraCls.includes('bgjob') ? '⏱ Runs in the background' : null,
@@ -479,7 +512,8 @@ function todayTimeline({ now, todayISO, hours, weekend }) {
       label && pos(end) - pos(start) > 24 ? h('span', { class: 'tail' }, label) : null,
       warn ? h('span', { class: 'w' }, '⚠ ') : null,
       extraCls.includes('bgjob') ? '⏱ ' : null,
-      h('b', {}, model?.name || task?.name || 'Job'), ' ', model ? h('span', {}, task?.name || '') : null,
+      a.recurring_id ? '🔁 ' : null,
+      h('b', {}, now.pump(a, { short: true }) || task?.name || 'Job'), ' ', now.pump(a) ? h('span', {}, task?.name || '') : null,
     );
   };
 
