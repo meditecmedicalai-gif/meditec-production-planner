@@ -47,8 +47,6 @@ alter table public.pump_models add column if not exists test_area_id uuid refere
 alter table public.tasks
   add column if not exists is_testing      boolean not null default false,  -- counts towards test capacity
   add column if not exists allows_any_pump boolean not null default false;  -- "Any / mixed pump" allowed (repairs)
--- Site-wide limit: pumps on test at once across all areas together.
-alter table public.app_settings add column if not exists max_pumps_on_test integer not null default 7 check (max_pumps_on_test > 0);
 
 -- Seeds -----------------------------------------------------------------
 insert into public.tasks (name, requires_pump, counts_as_output, is_background, is_testing, sort_order)
@@ -63,8 +61,8 @@ update public.tasks set allows_any_pump = true
 where name = 'Repair' and not exists (select 1 from public.tasks where allows_any_pump);
 
 insert into public.test_areas (name, max_pumps, sort_order, notes) values
-  ('Main test area', 7, 10, 'Shared by QPro 2000, Simplex, MediAir, MediAir Turn, MATS and Bari-Med 1'),
-  ('Medicare / Mediflex test area', 1, 20, 'Calibration and quality testing can run together on the same pump')
+  ('Main test area', 7, 10, 'Absolute max 7. Shared by QPro 2000, Simplex, MediAir, MediAir Turn, MATS and Bari-Med 1'),
+  ('Medicare / Mediflex test area', 1, 20, 'Separate area, 1 pump at a time. Calibration + quality testing on the same pump count once')
 on conflict (name) do nothing;
 
 do $$
@@ -260,15 +258,14 @@ end;
 $$;
 
 -- Seed: rental repairs every working day, any pump, Rental, not assigned yet.
-insert into public.recurring_jobs (title, task_id, any_pump, build_type_id, pattern, weekdays, start_date, start_time, end_time, notes)
+-- No times: you set them yourself when assigning it (🔁 Recurring jobs panel).
+insert into public.recurring_jobs (title, task_id, any_pump, build_type_id, pattern, weekdays, start_date, notes)
 select 'Rental repairs',
        (select id from public.tasks where name = 'Repair'),
        true,
        (select id from public.build_types where name = 'Rental'),
        'workdays', '{1,2,3,4,5}', current_date,
-       (select work_start from public.app_settings where id = 1),
-       (select work_end from public.app_settings where id = 1),
-       'Rental returns — any pump. Assign a person to start.'
+       'Rental returns — any pump. Assign a person and set the times to start.'
 where not exists (select 1 from public.recurring_jobs where title = 'Rental repairs')
   and exists (select 1 from public.tasks where name = 'Repair');
 

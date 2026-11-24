@@ -7,7 +7,7 @@
 -- The whole check is ONE statement. At the end it deliberately stops
 -- with an "error" whose message is the report:
 --
---     RLS CHECK FINISHED: 100 passed, 0 failed ...
+--     RLS CHECK FINISHED: 104 passed, 0 failed ...
 --
 -- Raising that error is what undoes every bit of test data, so nothing
 -- is left behind. Every line should start with PASS.
@@ -76,6 +76,20 @@ begin
     case when exists (select 1 from pg_publication_tables where pubname = 'supabase_realtime' and tablename = 'audit_log')
               or coalesce((select puballtables from pg_publication where pubname = 'supabase_realtime'), false)
          then 'FAIL' else 'PASS' end);
+  res := res || format('%s  setup   no site-wide limit — each test area is separate (006 migration run)',
+    case when exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'app_settings' and column_name = 'max_pumps_on_test')
+         then 'FAIL' else 'PASS' end);
+  res := res || format('%s  setup   Main test area: absolute max 7 pumps',
+    case when (select max_pumps from public.test_areas where name = 'Main test area') = 7 then 'PASS' else 'FAIL' end);
+  res := res || format('%s  setup   Medicare / Mediflex area separate: max 1, calibration + quality testing count once',
+    case when (select max_pumps from public.test_areas where name = 'Medicare / Mediflex test area') = 1
+          and (select count(*) from public.test_area_shared_tasks s join public.test_areas a on a.id = s.test_area_id
+               join public.tasks k on k.id = s.task_id
+               where a.name = 'Medicare / Mediflex test area' and k.name in ('Functional test / calibration', 'Quality testing')) = 2
+         then 'PASS' else 'FAIL' end);
+  res := res || format('%s  setup   MATS and Bari-Med 1 have no limit group (count towards Main only)',
+    case when exists (select 1 from public.test_limit_models x join public.pump_models m on m.id = x.pump_model_id
+                      where m.name in ('MediAir Turn Sense (MATS)', 'Bari-Med 1')) then 'FAIL' else 'PASS' end);
   res := res || format('%s  setup   viewer e-mail found (%s)', case when viewer_id is null then 'FAIL' else 'PASS' end, viewer_email);
   res := res || format('%s  setup   admin e-mail found (%s)',  case when admin_id  is null then 'FAIL' else 'PASS' end, admin_email);
 

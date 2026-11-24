@@ -268,28 +268,19 @@ function editRef(cfg, row, onSaved, nextSortOrder) {
 
 // ----------------------------------------------------- test areas & limits
 async function renderTestAreas(card, reloadAll) {
-  const [areas, limits, limitModels, shared, models, tasks, settings] = await Promise.all([
+  const [areas, limits, limitModels, shared, models, tasks] = await Promise.all([
     supabase.from('test_areas').select('*').order('sort_order').order('name'),
     supabase.from('test_limits').select('*').order('sort_order').order('name'),
     supabase.from('test_limit_models').select('test_limit_id, pump_model_id'),
     supabase.from('test_area_shared_tasks').select('test_area_id, task_id'),
     supabase.from('pump_models').select('id, name, short_code, test_area_id, active').order('sort_order'),
     supabase.from('tasks').select('id, name, is_testing, active').order('sort_order'),
-    supabase.from('app_settings').select('max_pumps_on_test').eq('id', 1).single(),
   ]);
-  const err = [areas, limits, limitModels, shared, models, tasks, settings].find((r) => r.error)?.error;
+  const err = [areas, limits, limitModels, shared, models, tasks].find((r) => r.error)?.error;
   if (reportError(err, 'Loading test areas')) return;
   const modelName = new Map(models.data.map((m) => [m.id, m.name]));
   const taskName = new Map(tasks.data.map((t) => [t.id, t.name]));
   const reload = () => renderTestAreas(card, reloadAll);
-
-  const siteMax = h('input', { type: 'number', min: 1, max: 99, value: settings.data.max_pumps_on_test, style: 'width:5.5rem' });
-  const saveSite = h('button', { class: 'btn btn-sm', onclick: async () => {
-    const v = Number(siteMax.value);
-    if (!Number.isInteger(v) || v < 1) { toast('Enter a whole number of pumps.', 'error'); return; }
-    const { error } = await supabase.from('app_settings').update({ max_pumps_on_test: v }).eq('id', 1);
-    if (!reportError(error, 'Saving')) toast('Site-wide limit saved.', 'success');
-  } }, 'Save');
 
   const areaBlock = (a) => {
     const aModels = models.data.filter((m) => m.test_area_id === a.id).map((m) => m.short_code || m.name);
@@ -298,10 +289,10 @@ async function renderTestAreas(card, reloadAll) {
     return h('div', { class: `area-block ${a.active ? '' : 'inactive'}` },
       h('div', { class: 'area-head' },
         h('div', {},
-          h('b', { class: 'ref-name' }, a.name), h('span', { class: 'tag tag-accent' }, `max ${a.max_pumps} at once`),
+          h('b', { class: 'ref-name' }, a.name), h('span', { class: 'tag tag-accent' }, `max ${a.max_pumps} at once — absolute for this area`),
           a.active ? null : h('span', { class: 'tag tag-muted' }, 'inactive'),
           h('div', { class: 'muted small' }, `Models: ${aModels.join(', ') || 'none yet (set a default test area on each pump model)'}`),
-          aShared.length ? h('div', { class: 'muted small' }, `Counted once when run together: ${aShared.join(' + ')}`) : null,
+          aShared.length ? h('div', { class: 'muted small' }, `Counted once when run together on the same pump: ${aShared.join(' + ')}`) : null,
         ),
         h('div', { class: 'ref-actions' },
           h('button', { class: 'btn btn-sm', onclick: () => editArea(a) }, 'Edit'),
@@ -335,7 +326,7 @@ async function renderTestAreas(card, reloadAll) {
         field('Notes', notes),
         h('fieldset', { class: 'skills-fieldset' }, h('legend', {}, 'Tasks that run together on the same pumps (count once)'),
           h('div', { class: 'check-grid' }, sharedBoxes.map((b) => b.el)),
-          h('p', { class: 'muted small' }, 'E.g. calibration and quality testing on Medicare / Mediflex: running both at once is not a clash.')),
+          h('p', { class: 'muted small' }, 'E.g. calibration and quality testing on the same Medicare or Mediflex pump at the same time count as one pump, not a clash. Different pump models still add up.')),
         active.el, error),
       actions: [{ label: 'Cancel' }, { label: 'Save', variant: 'primary', onClick: async () => {
         const values = { name: name.value.trim(), max_pumps: Number(max.value), notes: notes.value.trim() || null, active: active.input.checked };
@@ -415,8 +406,7 @@ async function renderTestAreas(card, reloadAll) {
     h('div', { class: 'card-head' },
       h('h2', {}, 'Test areas & limits'),
       h('button', { class: 'btn btn-primary btn-sm', onclick: () => editArea(null) }, '+ Add test area')),
-    h('p', { class: 'muted small' }, 'Pumps are tested several at a time. The planner adds up testing jobs (quantity = pumps on test) at overlapping times — including overnight and background jobs — and warns when an area, a limit group or the site-wide maximum is exceeded. Mark testing tasks under Tasks, and give each pump model a default test area.'),
-    h('div', { class: 'site-max' }, h('span', {}, 'All areas together: max'), siteMax, h('span', {}, 'pumps on test at once'), saveSite),
+    h('p', { class: 'muted small' }, 'Pumps are tested several at a time. The planner adds up testing jobs (quantity = pumps on test) at overlapping times — including overnight and background jobs — and warns when an area or a limit group is exceeded. Each area is separate: its maximum is the absolute limit for that area. Models without a limit group (e.g. MATS, Bari-Med 1) just count towards their area. Mark testing tasks under Tasks, and give each pump model a default test area.'),
     areas.data.length ? h('div', { class: 'stack' }, areas.data.map(areaBlock)) : h('p', { class: 'empty' }, 'No test areas yet.'),
   );
 }

@@ -326,8 +326,7 @@ export async function renderToday(main) {
             h('div', { class: 'ta-bar' }, fillEl),
             h('div', { class: `ta-peak cap-${level(a.peak, a.max)}` }, a.peak ? `Peak today ${a.peak}/${a.max} at ${a.at}` : 'Nothing on test today'));
         }),
-        capToday.limits.filter((l) => l.peak > l.max).map((l) => h('p', { class: 'warn-box' }, `⚠ ${l.limit.name}: ${l.peak}/${l.max} at ${l.at}`)),
-        capToday.site.peak > capToday.site.max ? h('p', { class: 'warn-box' }, `⚠ All areas together: ${capToday.site.peak}/${capToday.site.max} at ${capToday.site.at}`) : null)
+        capToday.limits.filter((l) => l.peak > l.max).map((l) => h('p', { class: 'warn-box' }, `⚠ ${l.limit.name}: ${l.peak}/${l.max} at ${l.at}`)))
       : h('p', { class: 'muted' }, auth.isAdmin ? 'Set up test areas in Settings.' : 'No test areas set up.'),
   );
   const updateTestNow = (m) => {

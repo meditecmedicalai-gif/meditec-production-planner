@@ -34,8 +34,9 @@ Live site (once deployed): `https://meditecmedicalai-gif.github.io/meditec-produ
    [`003_background_jobs.sql`](supabase/migrations/003_background_jobs.sql) (background / overnight jobs, equipment), then
    [`004_realtime.sql`](supabase/migrations/004_realtime.sql) (live updates; refreshed build-type colours), then
    [`005_capacity_recurring.sql`](supabase/migrations/005_capacity_recurring.sql) (test capacity, "Any / mixed pump",
-   recurring jobs). Its last result column says **Live updates: OK** — or lists tables to switch on by hand (see
-   *Live updates* below).
+   recurring jobs; its last result column says **Live updates: OK** — or lists tables to switch on by hand, see
+   *Live updates* below), then [`006_capacity_rules.sql`](supabase/migrations/006_capacity_rules.sql) (agreed
+   capacity rules; never overwrites your own Settings).
 
 ### 3. Lock down sign-in
 1. **Authentication → Sign In / Providers** (called *Providers* in some versions):
@@ -183,12 +184,14 @@ Pumps are tested several at a time, so the planner adds up **testing jobs** that
 - **Testing tasks** are marked in Settings → Tasks (🧪): Functional test / calibration, Quality testing,
   Soak / burn-in test. For these, **quantity = number of pumps on test**.
 - Each **pump model has a default test area** (Settings → Pump models).
-- **Test areas** (Settings → Test areas & limits) each have a maximum: *Main test area* 7 (QPro 2000,
-  Simplex, MediAir, MediAir Turn, MATS, Bari-Med 1) and *Medicare / Mediflex test area* 1.
-- **Limit groups** inside an area: QPro 2000 max 7; MediAir + Simplex max 6 combined; MediAir Turn max 3.
-- **Tasks that share pumps**: in the Medicare / Mediflex area, calibration and quality testing can run at
-  the same time — together they count once, not as a clash.
-- **All areas together**: max 7 pumps on test at once (editable).
+- **Test areas** (Settings → Test areas & limits) are **separate**, each with its own absolute maximum:
+  *Main test area* **7** (QPro 2000, Simplex, MediAir, MediAir Turn, MATS, Bari-Med 1) and
+  *Medicare / Mediflex test area* **1**. The Medicare / Mediflex area does not count towards the Main 7, and
+  there is no limit across areas.
+- **Limit groups** inside the Main area: QPro 2000 max 7; MediAir + Simplex max 6 combined; MediAir Turn max 3.
+  MATS and Bari-Med 1 have no group of their own — they just count towards the Main area's 7.
+- **Same pump, two tasks**: in the Medicare / Mediflex area, calibration and quality testing on the **same pump
+  at the same time** count as one pump (no clash). A Medicare and a Mediflex at the same time are two pumps.
 - Times come from the jobs (overnight and background jobs included); a testing job **without times counts all
   day**, so add times for accurate figures.
 - Where you see it: a **Test capacity** row at the top of each day in the planner ("Main 6/7 14:00"; amber =
@@ -205,8 +208,11 @@ be for "Any / mixed pump".
 - In **Add work**, choose **Repeat**: every working day, every day, weekly on chosen days, or every N weeks;
   with a *Repeat until* date or no end. Jobs are created **12 weeks ahead** and topped up automatically.
 - A recurring job can be saved **without a person** ("Not assigned yet"). The **🔁 Recurring jobs** panel on
-  the Week planner lists them — use **Assign…** to pick a person and the jobs are created. Migration 005 adds
-  a ready-made **Rental repairs** (Any pump, Rental, every working day, shift hours) waiting to be assigned.
+  the Week planner lists them — use **Assign…** to pick a person **and set the start / end time**, and the jobs
+  are created. Migration 005 adds a ready-made **Rental repairs** (Any pump, Rental, every working day, no
+  times yet) waiting to be assigned.
+- **Times** can be changed any time: on the 🔁 panel (the time boxes on each row → *From today onwards* or
+  *All jobs in the series*), or by opening one job in the planner → *This one only / This and future / All*.
 - Recurring jobs show **🔁**. Days when the person is absent are **skipped and flagged** in the planner.
 - Editing or deleting one asks **This one only / This and future / All**.
 - **Copy last week** never copies recurring jobs (they repeat by themselves).

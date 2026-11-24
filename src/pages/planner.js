@@ -6,7 +6,7 @@ import { loadSummaryDemand, summaryCard } from './summary.js';
 import { isBackground, coversDay, endDateOf, timeLabel, clashes, hm, pumpLabel, ABSENCE_TYPES } from '../jobs.js';
 import { capacityConfig, capacityForDay, level } from '../capacity.js';
 import { describe as describeRepeat, matches as repeatMatches } from '../recurring.js';
-import { editAssignment, editTemplate, deleteTemplate } from './jobEditor.js';
+import { editAssignment, editTemplate, deleteTemplate, saveTemplateTimes } from './jobEditor.js';
 import {
   toISO, fromISO, addDays, mondayOf, today, isoWeek,
   fmtDayShort, fmtDayLong, fmtWeekday, fmtRange, fmtDate,
@@ -52,7 +52,6 @@ export async function loadWeek(monday) {
     limits: supabase.from('test_limits').select('id, test_area_id, name, max_pumps, active, sort_order').order('sort_order').order('name'),
     limitModels: supabase.from('test_limit_models').select('test_limit_id, pump_model_id'),
     shared: supabase.from('test_area_shared_tasks').select('test_area_id, task_id'),
-    settings: supabase.from('app_settings').select('max_pumps_on_test').eq('id', 1).maybeSingle(),
     recurring: supabase.from('recurring_jobs').select('*').eq('active', true).order('created_at'),
   };
   const keys = Object.keys(q);
@@ -77,7 +76,7 @@ export async function loadWeek(monday) {
     areas: r.areas,
     capacity: capacityConfig({
       areas: r.areas, limits: r.limits, limitModels: r.limitModels, sharedTasks: r.shared,
-      models: r.models, tasks: r.tasks, siteMax: r.settings?.max_pumps_on_test ?? 7,
+      models: r.models, tasks: r.tasks,
     }),
   };
 }
@@ -270,9 +269,8 @@ export async function renderPlanner(main) {
     for (const l of c.limits.filter((x) => x.peak > x.max)) {
       pills.push(h('span', { class: 'cap-pill cap-over', title: `${l.limit.name}: ${l.peak} of ${l.max} at ${l.at}` }, `${l.limit.name} ${l.peak}/${l.max}`, h('small', {}, ` ${l.at}`)));
     }
-    if (c.site.peak > c.site.max) pills.push(h('span', { class: 'cap-pill cap-over', title: `All areas together: ${c.site.peak} of ${c.site.max} at ${c.site.at}` }, `Site ${c.site.peak}/${c.site.max}`, h('small', {}, ` ${c.site.at}`)));
     const detail = [...c.limits.map((l) => `${l.limit.name}: peak ${l.peak}/${l.max}${l.peak ? ` at ${l.at}` : ''}`),
-      `All areas: peak ${c.site.peak}/${c.site.max}`, ...[...c.models.values()].map((m) => `${m.name}: ${m.peak} at ${m.at}`)].join('\n');
+      ...[...c.models.values()].map((m) => `${m.name}: ${m.peak} at ${m.at}`)].join('\n');
     return h('div', { class: 'cap-cell', title: detail }, pills.length ? pills : h('span', { class: 'muted small' }, '—'));
   };
   const hasAreas = data.capacity.areas.length > 0;
@@ -385,14 +383,31 @@ function recurringPanel(ctx, personById, reload) {
           const task = ctx.taskById.get(r.task_id);
           const person = personById.get(r.person_id);
           const type = ctx.typeById.get(r.build_type_id);
+          const name = r.title || task?.name || 'Recurring job';
+          const hasJobs = Boolean(r.person_id);
+          let times;
+          if (auth.isAdmin) {
+            const st = h('input', { type: 'time', step: 300, value: hm(r.start_time) ?? '', 'aria-label': `Start time for ${name}` });
+            const et = h('input', { type: 'time', step: 300, value: hm(r.end_time) ?? '', 'aria-label': `End time for ${name}` });
+            const save = h('button', { class: 'btn btn-sm btn-primary', hidden: true,
+              onclick: () => saveTemplateTimes({ template: r, start: st.value, end: et.value, hasJobs, onSaved: reload }) }, 'Save times');
+            const changed = () => { save.hidden = st.value === (hm(r.start_time) ?? '') && et.value === (hm(r.end_time) ?? ''); };
+            st.addEventListener('input', changed); et.addEventListener('input', changed);
+            times = h('div', { class: 'recurring-times' },
+              h('span', { class: 'rt-label' }, 'Time'), st, h('span', { 'aria-hidden': 'true' }, '→'), et, save,
+              !r.start_time ? h('span', { class: 'rt-hint' }, 'not set — all day') : null);
+          } else {
+            times = h('span', { class: 'muted small' }, r.start_time ? `${hm(r.start_time)}–${hm(r.end_time) || '…'}` : 'All day');
+          }
           return h('li', {}, h('div', { class: 'recurring-row' },
             h('div', { class: 'demand-row-main' },
               h('span', { 'aria-hidden': 'true' }, '🔁'),
-              h('b', {}, r.title || task?.name || 'Recurring job'),
+              h('b', {}, name),
               h('span', {}, ctx.pump(r) || ''),
               type ? typeTag(type) : null,
-              h('span', { class: 'muted small' }, `${describeRepeat(r)}${r.start_time ? ` · ${hm(r.start_time)}–${hm(r.end_time) || '…'}` : ''}`),
+              h('span', { class: 'muted small' }, describeRepeat(r)),
             ),
+            times,
             h('div', { class: 'demand-badges' },
               person ? h('span', { class: 'status status-planned' }, person.name) : h('span', { class: 'status status-unassigned' }, 'Not assigned yet'),
               auth.isAdmin ? h('button', { class: `btn btn-sm ${person ? '' : 'btn-primary'}`, onclick: () => editTemplate({ ctx, template: r, personById, onSaved: reload }) }, person ? 'Edit' : 'Assign…') : null,

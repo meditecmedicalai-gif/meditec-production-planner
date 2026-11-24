@@ -470,10 +470,13 @@ export function editTemplate({ ctx, template, personById, onSaved }) {
     title: template ? (template.person_id ? '🔁 Edit recurring job' : '🔁 Assign recurring job') : '🔁 New recurring job',
     body: h('div', { class: 'stack' },
       h('div', { class: 'form-grid form-grid-2' }, field('Name', title), field('Person', personSel, 'Jobs are created once a person is chosen.')),
+      h('div', { class: 'form-grid form-grid-2 times-first' },
+        field('Start time', startTime, 'Set the time yourself — leave empty for all day.'),
+        field('End time', endTime, 'Earlier than start = runs overnight.')),
       field('Task / operation', taskSel),
       h('div', { class: 'form-grid form-grid-2' }, field('Pump model', pumps.modelSel), field('Build type', typeSel)),
       pumps.mixBox,
-      h('div', { class: 'form-grid form-grid-3' }, field('Quantity', qty), field('Start time', startTime), field('End time', endTime)),
+      field('Quantity', qty),
       h('div', { class: 'form-grid form-grid-2' }, field('Runs', bgSel), field('Equipment', equipSel)),
       h('fieldset', { class: 'skills-fieldset' }, h('legend', {}, 'Repeat'), field('Starts on', startDate), repeat.el),
       field('Notes', notes),
@@ -536,4 +539,39 @@ export async function deleteTemplate({ template, onDone }) {
   if (reportError(error, 'Stopping')) return;
   toast('Recurring job stopped.', 'success');
   onDone();
+}
+
+/** Change the times of a recurring job from the 🔁 panel. */
+export async function saveTemplateTimes({ template, start, end, hasJobs, onSaved }) {
+  if (end && !start) { toast('Add a start time (or clear the end time).', 'error'); return; }
+  const times = { start_time: start || null, end_time: end || null };
+  let scope = 'template';
+  if (hasJobs) {
+    scope = await new Promise((resolve) => {
+      let done = false;
+      const pickScope = (v) => () => { done = true; resolve(v); };
+      const { dialog } = openModal({
+        title: 'Change times',
+        body: h('div', { class: 'stack-sm' },
+          h('p', {}, `New times for “${template.title || 'Recurring job'}”: ${start || 'all day'}${end ? ` – ${end}` : ''}.`),
+          h('p', { class: 'muted small' }, 'Jobs you changed individually (“this one only”) keep their own times. To change just one day, open that job in the planner.')),
+        actions: [
+          { label: 'Cancel', onClick: pickScope(null) },
+          { label: 'From today onwards', onClick: pickScope('future') },
+          { label: 'All jobs in the series', variant: 'primary', onClick: pickScope('all') },
+        ],
+      });
+      dialog.addEventListener('close', () => { if (!done) resolve(null); });
+    });
+    if (!scope) return;
+  }
+  let { error } = await supabase.from('recurring_jobs').update(times).eq('id', template.id);
+  if (!error && scope !== 'template') {
+    let q = supabase.from('assignments').update(times).eq('recurring_id', template.id).eq('recurring_detached', false);
+    if (scope === 'future') q = q.gte('recurring_date', toISO(today()));
+    ({ error } = await q);
+  }
+  if (reportError(error, 'Saving times')) return;
+  toast(scope === 'future' ? 'Times changed from today onwards.' : scope === 'all' ? 'Times changed for the whole series.' : 'Times saved.', 'success');
+  onSaved();
 }

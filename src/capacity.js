@@ -6,12 +6,16 @@
 // jobs count like any other.
 //
 // Inside an area, tasks marked as sharing pumps (e.g. calibration + quality
-// testing on Medicare / Mediflex) run on the same pumps: together they count as
-// the largest of them, not the sum.
+// testing on Medicare / Mediflex) run on the SAME pump at the same time: for the
+// same pump model they count as the largest of them, not the sum. Different
+// models are different pumps and do add up.
+//
+// Each area's maximum is absolute for that area (Main test area: 7). Areas are
+// separate — there is no limit across areas.
 import { intervalOf } from './jobs.js';
 
 /** Build the lookup structure from loaded rows. */
-export function capacityConfig({ areas = [], limits = [], limitModels = [], sharedTasks = [], models = [], tasks = [], siteMax = 7 }) {
+export function capacityConfig({ areas = [], limits = [], limitModels = [], sharedTasks = [], models = [], tasks = [] }) {
   const modelArea = new Map(models.filter((m) => m.test_area_id).map((m) => [m.id, m.test_area_id]));
   const shared = new Map();
   for (const s of sharedTasks) {
@@ -29,14 +33,13 @@ export function capacityConfig({ areas = [], limits = [], limitModels = [], shar
     modelArea,
     modelName: new Map(models.map((m) => [m.id, m.short_code || m.name])),
     testing: new Set(tasks.filter((t) => t.is_testing).map((t) => t.id)),
-    siteMax,
   };
 }
 
 export const isTestingJob = (j, cfg) =>
   cfg.testing.has(j.task_id) && j.pump_model_id && cfg.modelArea.has(j.pump_model_id) && (j.qty_target || 0) > 0;
 
-/** Pumps on test among `active` jobs that pass `keep` (shared tasks count once per area). */
+/** Pumps on test among `active` jobs that pass `keep` (shared tasks count once per area and pump model). */
 function count(active, cfg, keep) {
   let total = 0;
   const sharedMax = new Map();
@@ -44,7 +47,8 @@ function count(active, cfg, keep) {
     if (!keep(j)) continue;
     const area = cfg.modelArea.get(j.pump_model_id);
     const q = j.qty_target || 0;
-    if (cfg.shared.get(area)?.has(j.task_id)) sharedMax.set(area, Math.max(sharedMax.get(area) || 0, q));
+    const key = `${area}|${j.pump_model_id}`;
+    if (cfg.shared.get(area)?.has(j.task_id)) sharedMax.set(key, Math.max(sharedMax.get(key) || 0, q));
     else total += q;
   }
   for (const v of sharedMax.values()) total += v;
@@ -58,7 +62,7 @@ const hhmmOf = (minutesSinceEpoch) => {
 
 /**
  * Peaks within [from, to) (minutes since epoch, as from intervalOf).
- * Returns { site, areas[], limits[], models: Map, jobMsgs: Map(jobId -> [messages]) }.
+ * Returns { areas[], limits[], models: Map, jobMsgs: Map(jobId -> [messages]) }.
  */
 export function capacityInWindow(jobs, cfg, from, to) {
   const tj = [];
@@ -69,7 +73,6 @@ export function capacityInWindow(jobs, cfg, from, to) {
   }
   const pts = [...new Set([from, ...tj.map((x) => x.s), ...tj.map((x) => x.e)])].filter((p) => p >= from && p < to).sort((a, b) => a - b);
 
-  const site = { peak: 0, at: null, max: cfg.siteMax };
   const areas = cfg.areas.map((a) => ({ area: a, peak: 0, at: null, max: a.max_pumps }));
   const limits = cfg.limits.map((l) => ({ limit: l, area: cfg.areaById.get(l.test_area_id), peak: 0, at: null, max: l.max_pumps }));
   const models = new Map();
@@ -87,10 +90,6 @@ export function capacityInWindow(jobs, cfg, from, to) {
     const active = tj.filter((x) => x.s <= p && x.e > p).map((x) => x.j);
     if (!active.length) continue;
     const at = hhmmOf(p);
-
-    const total = count(active, cfg, () => true);
-    if (total > site.peak) Object.assign(site, { peak: total, at });
-    if (total > cfg.siteMax) flag(active, () => true, `Site limit: ${total} pumps on test at ${at} (max ${cfg.siteMax})`);
 
     for (const a of areas) {
       const inArea = (j) => cfg.modelArea.get(j.pump_model_id) === a.area.id;
@@ -110,7 +109,7 @@ export function capacityInWindow(jobs, cfg, from, to) {
       if (!cur || n > cur.peak) models.set(m, { peak: n, at, name: cfg.modelName.get(m) });
     }
   }
-  return { site, areas, limits, models, jobMsgs };
+  return { areas, limits, models, jobMsgs };
 }
 
 /** Capacity for one calendar day ("YYYY-MM-DD"). */

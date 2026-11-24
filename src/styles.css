@@ -55,6 +55,7 @@
 
 /* ---------------------------------------------------------------- base */
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }
 html, body { margin: 0; }
 body {
   background: var(--bg); color: var(--text);
@@ -728,7 +729,6 @@ button.absence { cursor: pointer; }
 .mix-item input { width: 4.2rem; padding: .3rem .45rem; }
 
 /* settings: test areas */
-.site-max { display: flex; align-items: center; gap: .5rem; flex-wrap: wrap; margin: .6rem 0 1rem; font-size: .92rem; }
 .area-block { border: 1px solid var(--line); border-radius: 12px; padding: .8rem 1rem; }
 .area-block.inactive { opacity: .6; }
 .area-head { display: flex; justify-content: space-between; align-items: flex-start; gap: .5rem 1rem; flex-wrap: wrap; }
@@ -741,3 +741,10 @@ button.absence { cursor: pointer; }
   .cap-pill { font-size: 6.5pt; padding: 0 1mm; }
   .recurring-panel { display: none !important; }
 }
+
+/* recurring panel: editable times */
+.recurring-times { display: flex; align-items: center; gap: .4rem; flex-wrap: wrap; }
+.recurring-times input[type=time] { width: 7.2rem; padding: .32rem .5rem; font-variant-numeric: tabular-nums; border-color: var(--brand-line); background: var(--brand-soft); }
+.recurring-times .rt-label { font-size: .78rem; font-weight: 650; color: var(--ink-2); }
+.recurring-times .rt-hint { font-size: .76rem; color: var(--amber); font-weight: 600; }
+.times-first { padding: .6rem .7rem; border-radius: 12px; background: var(--brand-soft); border: 1px solid var(--brand-line); }
