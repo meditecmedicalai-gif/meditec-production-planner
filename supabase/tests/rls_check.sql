@@ -7,7 +7,7 @@
 -- The whole check is ONE statement. At the end it deliberately stops
 -- with an "error" whose message is the report:
 --
---     RLS CHECK FINISHED: 60 passed, 0 failed ...
+--     RLS CHECK FINISHED: 63 passed, 0 failed ...
 --
 -- Raising that error is what undoes every bit of test data, so nothing
 -- is left behind. Every line should start with PASS.
@@ -57,6 +57,12 @@ begin
     case when (select count(*) from public.build_types where is_default) = 1 then 'PASS' else 'FAIL' end);
   res := res || format('%s  setup   viewer e-mail found (%s)', case when viewer_id is null then 'FAIL' else 'PASS' end, viewer_email);
   res := res || format('%s  setup   admin e-mail found (%s)',  case when admin_id  is null then 'FAIL' else 'PASS' end, admin_email);
+
+  -- A note "posted by the admin", so the viewer checks below always have
+  -- someone else's note to try (and fail) to edit. Rolled back at the end.
+  if admin_id is not null then
+    insert into public.demand_notes (quantity, comment, created_by) values (1, 'RLS test: admin note', admin_id);
+  end if;
 
   -- ------------------------------------------------------------- viewer
   if viewer_id is not null then
@@ -170,7 +176,9 @@ begin
     res := res || format('%s  viewer  cannot post a note in someone else''s name', case when ok then 'PASS' else 'FAIL' end);
 
     select id into other_note from public.demand_notes where created_by is distinct from auth.uid() limit 1;
-    if other_note is not null then
+    if other_note is null then
+      res := res || 'FAIL  viewer  cannot edit others'' notes (no other note found to test with)'::text;
+    else
       update public.demand_notes set comment = 'hacked' where id = other_note;
       get diagnostics n = row_count;
       res := res || format('%s  viewer  cannot edit others'' notes', case when n = 0 then 'PASS' else 'FAIL' end);

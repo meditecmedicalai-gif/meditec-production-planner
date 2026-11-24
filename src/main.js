@@ -5,6 +5,7 @@ import { h, mount, hhmm } from './ui.js';
 import { renderLogin } from './pages/login.js';
 import { renderPlanner } from './pages/planner.js';
 import { renderDemand } from './pages/demand.js';
+import { renderHistory } from './pages/history.js';
 import { renderAccount } from './pages/account.js';
 import { renderPeople } from './pages/people.js';
 import { renderSettings } from './pages/settings.js';
@@ -18,6 +19,7 @@ const routes = {
   '/demand':   { label: 'Demand & Notes', render: renderDemand },
   '/people':   { label: 'People',         render: renderPeople },
   '/settings': { label: 'Settings',       render: renderSettings, admin: true },
+  '/history':  { label: 'History',        render: renderHistory, admin: true },
   '/account':  { label: 'My account',     render: renderAccount, hidden: true },
 };
 const DEFAULT_ROUTE = '/planner';
