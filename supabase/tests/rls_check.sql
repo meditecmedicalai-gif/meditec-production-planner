@@ -7,7 +7,7 @@
 -- The whole check is ONE statement. At the end it deliberately stops
 -- with an "error" whose message is the report:
 --
---     RLS CHECK FINISHED: 63 passed, 0 failed ...
+--     RLS CHECK FINISHED: 75 passed, 0 failed ...
 --
 -- Raising that error is what undoes every bit of test data, so nothing
 -- is left behind. Every line should start with PASS.
@@ -55,6 +55,10 @@ begin
          then 'FAIL' else 'PASS' end);
   res := res || format('%s  setup   exactly one default build type',
     case when (select count(*) from public.build_types where is_default) = 1 then 'PASS' else 'FAIL' end);
+  res := res || format('%s  setup   equipment table and background-job columns exist (003 migration run)',
+    case when exists (select 1 from information_schema.columns
+                      where table_schema = 'public' and table_name = 'assignments' and column_name = 'equipment_id')
+         then 'PASS' else 'FAIL' end);
   res := res || format('%s  setup   viewer e-mail found (%s)', case when viewer_id is null then 'FAIL' else 'PASS' end, viewer_email);
   res := res || format('%s  setup   admin e-mail found (%s)',  case when admin_id  is null then 'FAIL' else 'PASS' end, admin_email);
 
@@ -132,6 +136,24 @@ begin
     update public.build_types set color = '#000000';
     get diagnostics n = row_count;
     res := res || format('%s  viewer  cannot edit build types', case when n = 0 then 'PASS' else 'FAIL' end);
+
+    select count(*) into n from public.equipment;
+    res := res || format('%s  viewer  can read equipment', case when n > 0 then 'PASS' else 'FAIL' end);
+
+    begin
+      insert into public.equipment (name) values ('RLS test rig');
+      ok := false;
+    exception when insufficient_privilege then ok := true;
+    end;
+    res := res || format('%s  viewer  cannot add equipment', case when ok then 'PASS' else 'FAIL' end);
+
+    update public.equipment set notes = 'hacked';
+    get diagnostics n = row_count;
+    res := res || format('%s  viewer  cannot edit equipment', case when n = 0 then 'PASS' else 'FAIL' end);
+
+    update public.tasks set is_background = not is_background;
+    get diagnostics n = row_count;
+    res := res || format('%s  viewer  cannot change task background flag', case when n = 0 then 'PASS' else 'FAIL' end);
 
     begin
       insert into public.tasks (name) values ('RLS test task');
@@ -252,6 +274,36 @@ begin
         select count(*) into n from public.audit_log where table_name = 'demand_notes' and record_id = note_id;
         res := res || format('%s  admin   demand note history in audit log (%s entries)', case when n >= 4 then 'PASS' else 'FAIL' end, n);
       end if;
+
+      -- Equipment and background / overnight jobs
+      insert into public.equipment (name) values ('RLS test rig');
+      res := res || 'PASS  admin   can add equipment'::text;
+      select count(*) into n from public.audit_log where table_name = 'equipment' and changed_at >= now();
+      res := res || format('%s  admin   equipment change written to audit log', case when n >= 1 then 'PASS' else 'FAIL' end);
+
+      insert into public.assignments (person_id, work_date, task_id, pump_model_id, background, start_time, end_time, equipment_id, qty_target)
+      values (pid, current_date, (select id from public.tasks where requires_pump order by sort_order limit 1),
+              (select id from public.pump_models order by sort_order limit 1), true, '16:00', '08:00',
+              (select id from public.equipment where name = 'RLS test rig'), 2);
+      select count(*) into n from public.audit_log
+      where table_name = 'assignments' and changed_at >= now() and new_data ? 'equipment_id' and (new_data ->> 'background') = 'true';
+      res := res || format('%s  admin   overnight background job saved and audited with new fields', case when n >= 1 then 'PASS' else 'FAIL' end);
+
+      begin
+        insert into public.assignments (person_id, work_date, task_id, end_time)
+        values (pid, current_date, (select id from public.tasks where name = 'Training'), '12:00');
+        ok := false;
+      exception when check_violation then ok := true;
+      end;
+      res := res || format('%s  admin   end time without a start time is rejected', case when ok then 'PASS' else 'FAIL' end);
+
+      begin
+        insert into public.assignments (person_id, work_date, task_id, end_date)
+        values (pid, current_date, (select id from public.tasks where name = 'Training'), current_date - 1);
+        ok := false;
+      exception when check_violation then ok := true;
+      end;
+      res := res || format('%s  admin   end date before start date is rejected', case when ok then 'PASS' else 'FAIL' end);
 
       begin
         insert into public.audit_log (table_name, action) values ('x', 'insert');

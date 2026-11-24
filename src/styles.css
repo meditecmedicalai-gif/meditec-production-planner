@@ -496,3 +496,32 @@ button.absence { cursor: pointer; }
   .summary tr { break-inside: avoid; }
   a[href]::after { content: none; }
 }
+
+/* ---------- phase 6: background / overnight jobs, equipment ---------- */
+.chip-meta { display: flex; flex-wrap: wrap; align-items: center; gap: .1rem .4rem; font-size: .76rem; color: var(--muted); }
+.chip-time { font-variant-numeric: tabular-nums; }
+.equip-tag {
+  display: inline-block; font-size: .7rem; font-weight: 600; padding: 0 .4rem; border-radius: 4px;
+  background: var(--surface-2); color: var(--text); border: 1px solid var(--border);
+}
+.bg-group { display: flex; flex-direction: column; gap: .25rem; margin-top: .1rem; }
+.bg-group-label { font-size: .68rem; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); }
+.chip-bg {
+  border-style: dashed; border-left-style: dashed;
+  background: repeating-linear-gradient(135deg, var(--surface) 0 8px, var(--surface-2) 8px 16px);
+}
+.chip-bg .chip-model { font-weight: 600; }
+.chip-bg-icon { font-size: .85rem; }
+.chip-cont { opacity: .85; }
+.chip-cont .chip-model::before { content: "↳ "; color: var(--muted); }
+.chip-bg.chip-warn { background: var(--warn-soft); }
+.legend-bg { font-size: .8rem; padding: 0 .4rem; border: 1px dashed var(--muted); border-radius: 5px; color: var(--muted); }
+.time-hint { margin: .3rem 0 .6rem; }
+
+@media print {
+  .chip-meta { font-size: 7pt; }
+  .equip-tag { font-size: 6.5pt; padding: 0 1mm; }
+  .bg-group-label { font-size: 6.5pt; }
+  .chip-bg { background: #fff; border-style: dashed; }
+  .legend-bg { font-size: 7.5pt; }
+}

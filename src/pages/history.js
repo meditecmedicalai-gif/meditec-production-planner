@@ -3,6 +3,7 @@ import { supabase } from '../supabase.js';
 import { fromISO, fmtDayShort, fmtDate } from '../dates.js';
 import { ABSENCE_TYPES } from './planner.js';
 import { PRIORITIES, STATUSES } from './demand.js';
+import { timeSummary, hm } from '../jobs.js';
 
 // Admin-only change history, read from audit_log (written by DB triggers).
 
@@ -12,29 +13,32 @@ const TABLES = {
   absences: 'Absences',
   demand_notes: 'Demand notes',
   build_types: 'Build types',
+  equipment: 'Equipment',
 };
 const ACTIONS = { insert: 'Added', update: 'Changed', delete: 'Deleted' };
-const NOUN = { assignments: 'job', absences: 'absence', demand_notes: 'demand note', build_types: 'build type' };
+const NOUN = { assignments: 'job', absences: 'absence', demand_notes: 'demand note', build_types: 'build type', equipment: 'equipment' };
 const IGNORE = new Set(['id', 'created_at', 'created_by', 'updated_at', 'updated_by']);
 
 let tableFilter = '';
 let personFilter = '';
 
 async function loadLookups() {
-  const [people, models, tasks, types, profiles] = await Promise.all([
+  const [people, models, tasks, types, profiles, equipment] = await Promise.all([
     supabase.from('people').select('id, name'),
     supabase.from('pump_models').select('id, name'),
     supabase.from('tasks').select('id, name'),
     supabase.from('build_types').select('id, name'),
     supabase.from('profiles').select('id, full_name, email'),
+    supabase.from('equipment').select('id, name'),
   ]);
-  const error = [people, models, tasks, types, profiles].find((r) => r.error)?.error;
+  const error = [people, models, tasks, types, profiles, equipment].find((r) => r.error)?.error;
   if (error) return { error };
   const map = (rows, label = (r) => r.name) => new Map(rows.map((r) => [r.id, label(r)]));
   return {
     people: people.data.slice().sort((a, b) => a.name.localeCompare(b.name)),
     person: map(people.data), model: map(models.data), task: map(tasks.data), type: map(types.data),
     user: map(profiles.data, (p) => p.full_name || p.email),
+    equipment: map(equipment.data),
   };
 }
 
@@ -47,9 +51,11 @@ function fieldLabel(table, key) {
     needed_by: 'Needed by', priority: 'Priority', comment: 'Comment', status: 'Status',
     start_date: 'From', end_date: 'To', absence_type: 'Type', name: 'Name', color: 'Colour',
     is_default: 'Default', active: 'Active', sort_order: 'Order',
+    start_time: 'Start time', end_time: 'End time', end_date: 'Ends on', background: 'Runs', equipment_id: 'Equipment',
   })[key] || key;
 }
 function fieldValue(key, v, L) {
+  if (key === 'background') return v == null ? 'task default' : (v ? 'background' : 'attended');
   if (v == null || v === '') return '—';
   switch (key) {
     case 'person_id': return L.person.get(v) || '(deleted person)';
@@ -57,6 +63,8 @@ function fieldValue(key, v, L) {
     case 'task_id': return L.task.get(v) || '(deleted task)';
     case 'build_type_id': return L.type.get(v) || '(deleted type)';
     case 'work_date': case 'needed_by': case 'start_date': case 'end_date': return day(v);
+    case 'start_time': case 'end_time': return hm(v);
+    case 'equipment_id': return L.equipment.get(v) || '(deleted equipment)';
     case 'priority': return PRIORITIES[v] || v;
     case 'status': return STATUSES[v] || v;
     case 'absence_type': return ABSENCE_TYPES[v] || v;
@@ -70,8 +78,12 @@ function describe(table, row, L) {
   const v = (k) => fieldValue(k, row[k], L);
   switch (table) {
     case 'assignments':
-      return [v('person_id'), v('work_date'), row.pump_model_id && v('pump_model_id'), row.build_type_id && v('build_type_id'),
-        v('task_id'), row.qty_target != null && `× ${row.qty_target}`].filter(Boolean).join(' · ');
+      return [v('person_id'), v('work_date'), timeSummary(row), row.pump_model_id && v('pump_model_id'), row.build_type_id && v('build_type_id'),
+        v('task_id'), row.qty_target != null && `× ${row.qty_target}`,
+        row.background === true && '⏱ background', row.background === false && 'attended',
+        row.equipment_id && `on ${v('equipment_id')}`].filter(Boolean).join(' · ');
+    case 'equipment':
+      return row.name;
     case 'absences':
       return `${v('person_id')} · ${v('absence_type')} · ${v('start_date')}${row.end_date !== row.start_date ? ` – ${v('end_date')}` : ''}`;
     case 'demand_notes':
@@ -149,7 +161,7 @@ export async function renderHistory(main) {
 
   mount(main,
     h('div', { class: 'page-head' }, h('h1', { class: 'page-title' }, 'History')),
-    h('p', { class: 'muted small' }, 'Every change to planner jobs, absences, demand notes and build types, recorded automatically by the database. Only admins can see this page, and entries cannot be edited.'),
+    h('p', { class: 'muted small' }, 'Every change to planner jobs, absences, demand notes, build types and equipment, recorded automatically by the database. Only admins can see this page, and entries cannot be edited.'),
     h('div', { class: 'filter-bar card' },
       h('div', { class: 'field' }, h('label', {}, 'Show', tableSel)),
       h('div', { class: 'field' }, h('label', {}, 'Team member (jobs & absences)', personSel)),

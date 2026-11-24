@@ -6,7 +6,9 @@ import { toISO, addDays, fmtDayShort } from '../dates.js';
 //
 // Planned  = sum of quantity targets in the displayed week (Mon–Fri) for tasks
 //            marked "counts as output" (normally Final assembly), or for all
-//            pump tasks when the toggle is on.
+//            pump tasks when the toggle is on. Background jobs follow the same
+//            rule (they count only if their task counts as output). A job that
+//            runs over several days is counted once, on the day it starts.
 // Demand   = open + planned demand notes for that model/type that are due by
 //            Friday of the displayed week (including overdue).
 // Later    = open + planned notes due after that Friday or with no date
@@ -31,6 +33,7 @@ export async function loadSummaryDemand() {
 
 /** Pure calculation — returns rows grouped by model. Exported for testing. */
 export function computeSummary({ monday, assignments, notes, tasks, models, types, allTasks, typeFilter }) {
+  const from = toISO(monday);
   const friday = toISO(addDays(monday, 4));
   const taskById = new Map(tasks.map((t) => [t.id, t]));
   const counts = new Map(); // key model|type -> { planned, demand, later }
@@ -44,6 +47,7 @@ export function computeSummary({ monday, assignments, notes, tasks, models, type
   for (const a of assignments) {
     const task = taskById.get(a.task_id);
     if (!a.pump_model_id || !task || !typeOk(a.build_type_id)) continue;
+    if (a.work_date < from || a.work_date > friday) continue; // counted on its start day only
     if (allTasks ? !task.requires_pump : !task.counts_as_output) continue;
     cell(a.pump_model_id, a.build_type_id).planned += a.qty_target || 0;
   }

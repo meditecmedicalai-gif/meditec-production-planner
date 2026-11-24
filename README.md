@@ -30,7 +30,8 @@ Live site (once deployed): `https://meditecmedicalai-gif.github.io/meditec-produ
    It creates all tables, security policies, the change log triggers, and seeds the pump models,
    tasks and working hours. It is safe to run again.
 3. Do the same with each later migration in order: [`002_build_types.sql`](supabase/migrations/002_build_types.sql)
-   (build types: Production / Trial / Rental / Customer).
+   (build types: Production / Trial / Rental / Customer), then
+   [`003_background_jobs.sql`](supabase/migrations/003_background_jobs.sql) (background / overnight jobs, equipment).
 
 ### 3. Lock down sign-in
 1. **Authentication → Sign In / Providers** (called *Providers* in some versions):
@@ -144,6 +145,17 @@ src/pages/                         one file per page
 - **Build types** (Settings) tag each pump job, e.g. Production, Trial, Rental, Customer, each with its
   own colour. The default type (Production) is pre-selected and is used automatically if a pump job is
   saved without one. Tasks that don't need a pump (Training, Stock room / 5S, Other) can have no type.
+- **Times, overnight and multi-day jobs** (optional, under *Timing & equipment*): give a start and end
+  time. If the end time is earlier than the start (e.g. 16:00 → 08:00) the job runs overnight; set
+  **Ends on** for jobs over several days. The job appears on every day it covers ("16:00 → 08:00 next
+  day" on the first day, "cont. from Mon 16:00 · ends 08:00" after). Quantities are counted once, on the
+  start day. No times = all day.
+- **Background / unattended jobs** (e.g. soak / burn-in tests) have a dashed outline and ⏱, and are
+  listed under the person's normal jobs. A task can be marked background in Settings; each job can
+  override it (*Runs: Task default / Background / Attended*). Background jobs never count as a time clash
+  for the person, and are only flagged for absence on the day they start (someone has to set them up).
+- **Equipment / test stations** (Settings) can be linked to a job. ⚠ warns when the same equipment is
+  booked at overlapping times (any person), and when a person has two attended jobs whose times overlap.
 - **On a phone** the planner shows one day at a time with day tabs.
 
 ## Demand & Notes
@@ -163,7 +175,7 @@ Shown below the planner grid (or jump to it with **Summary ↓**), for the week 
 
 | Column | Meaning |
 |---|---|
-| **Planned** | Quantity targets this week (Mon–Fri) for tasks marked *Counts as output* in Settings (normally Final assembly). Tick **Count all pump tasks** to include every pump task instead. |
+| **Planned** | Quantity targets this week (Mon–Fri) for tasks marked *Counts as output* in Settings (normally Final assembly). Tick **Count all pump tasks** to include every pump task instead. Background jobs follow the same rule; a job spanning several days counts once, in the week it starts. |
 | **Demand due** | Open + planned demand notes for that model and build type due by Friday of that week, **including overdue**. |
 | **Gap** | Planned − Demand due. Red = short, green = covered. |
 | **Later / no date** | Open + planned demand due after that week or with no date (for information; not in the gap). |
@@ -183,7 +195,7 @@ was added / deleted, and for changes the old → new value of each field. Filter
 Entries come from database triggers and cannot be edited or deleted through the app.
 
 ## Change history (audit log)
-Every insert, update and delete on **assignments**, **absences**, **demand notes** and **build types** is recorded
+Every insert, update and delete on **assignments**, **absences**, **demand notes**, **build types** and **equipment** is recorded
 automatically in `audit_log` (who, when, old and new values) by database triggers. Only admins can
 read it (on the **History** page), and nobody can edit it through the app or API.
 This is a planning aid, not a controlled QMS record.
@@ -194,3 +206,4 @@ This is a planning aid, not a controlled QMS record.
 3. ✅ Weekly planner, absences and build types
 4. ✅ Demand & notes (with build-type filter) and open-demand panel on the planner
 5. ✅ Weekly summary by pump model and build type, History page, A4 print view
+6. ✅ Background & overnight jobs, job times, equipment / test stations
