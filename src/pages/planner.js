@@ -388,34 +388,45 @@ export async function renderPlanner(main) {
     const span = (x) => `${fmtMin(x[0])}–${fmtMin(x[1])}`;
     const pills = c.areas.filter((a, i) => i === 0 || a.peak > 0 || a.untimed.length).map((a) => {
       if (a.sequential) {
-        // one at a time: show when the bench is busy, not "8/1"
+        // one at a time: a short "Bench busy / 13:30–17:00"; pumps and minutes per pump go in the popover
         const over = a.peak > 1;
-        const batches = a.batches.map((b) => `${fmtMin(b.s)}–${fmtMin(b.e)}: ${ctx.pump(b.job) || 'pumps'} ×${b.pumps}${b.perPump ? ` · ~${b.perPump} min each` : ''}`).join('\n');
-        return h('span', {
+        const name = a.label.replace(/ test bench$/i, '').replace(/^Medicare \/ Mediflex$/i, 'Bench') || 'Bench';
+        const short = name === 'Bench' ? 'Bench' : `${name} bench`;
+        const lines = a.batches.map((b) => `${fmtMin(b.s)}–${fmtMin(b.e)} · ${ctx.pump(b.job) || 'Pumps'}${b.pumps ? ` · ${b.pumps} pumps` : ''}${b.perPump ? ` · ~${b.perPump} min each` : ''}`);
+        const tip = `${a.label} — one pump at a time.\n${lines.join('\n') || 'Free all day'}${over ? `\n⚠ ${a.peak} jobs overlap at ${a.at}` : ''}`;
+        const pill = h('span', {
           class: `cap-pill cap-seq ${over ? 'cap-over' : a.busy.length ? 'cap-busy' : 'cap-ok'}`,
-          title: `${a.label} — one pump at a time.\n${batches || 'Free all day'}${over ? `\n⚠ ${a.peak} jobs overlap at ${a.at}` : ''}`,
-        }, a.busy.length ? `${a.label.replace(/ test bench$/i, '')} bench busy ${a.busy.map(span).join(', ')}` : `${a.label} free`,
-          a.batches.length === 1 && a.batches[0].pumps ? h('small', {}, ` ${a.batches[0].pumps} pumps${a.batches[0].perPump ? ` · ~${a.batches[0].perPump} min each` : ''}`) : null,
-          over ? h('small', {}, ` ⚠ ${a.peak} overlap ${a.at}`) : null);
+          title: graph ? false : tip,
+          'aria-label': tip.replace(/\n/g, '. '),
+        },
+          h('span', { class: 'cap-pill-l' }, a.busy.length ? `${short} busy` : `${short} free`), ' ',
+          a.busy.length ? h('span', { class: 'cap-pill-t' }, a.busy.map(span).join(', ')) : null,
+          over ? ' ' : null, over ? h('span', { class: 'cap-pill-t cap-pill-warn' }, `⚠ ${a.peak} overlap ${a.at}`) : null);
+        if (!graph) return pill;
+        return h('span', { class: 'cap-wrap', tabindex: 0 }, pill,
+          h('div', { class: 'cap-pop', role: 'tooltip' },
+            h('div', { class: 'cap-pop-title' }, `${a.label} — one pump at a time`),
+            lines.length ? h('ul', { class: 'cap-pop-list' }, lines.map((l) => h('li', {}, l))) : h('div', { class: 'cap-pop-text' }, 'Free all day'),
+            over ? h('div', { class: 'cap-pop-text cap-pop-warn' }, `⚠ ${a.peak} jobs overlap at ${a.at}`) : null));
       }
       const lv = level(a.peak, a.max);
       const wrap = h('span', { class: 'cap-wrap', tabindex: graph ? 0 : false },
         h('span', {
           class: `cap-pill cap-${lv}`,
           title: graph ? false : `${a.label} (${a.area.name}): peak ${a.peak} of ${a.max}${a.at && a.peak ? ` at ${a.at}` : ''}\n${occupancyText(a.series)}`,
-        }, `${a.label} ${a.peak}/${a.max}`, a.peak ? h('small', {}, ` ${a.at}`) : null),
+        }, h('span', { class: 'cap-pill-l' }, `${a.label} ${a.peak}/${a.max}`), a.peak ? ' ' : null, a.peak ? h('span', { class: 'cap-pill-t' }, a.at) : null),
         graph && a.peak ? h('span', { class: 'cap-spark', 'aria-hidden': 'true' }, occupancySvg(a.series, { max: a.max, ...win, height: 16 })) : null,
         graph ? occupancyPopover(a, win) : null);
       return wrap;
     });
     for (const l of c.limits.filter((x) => x.peak > x.max)) {
-      pills.push(h('span', { class: 'cap-pill cap-over', title: `${l.limit.name}: ${l.peak} of ${l.max} at ${l.at}` }, `${l.limit.name} ${l.peak}/${l.max}`, h('small', {}, ` ${l.at}`)));
+      pills.push(h('span', { class: 'cap-pill cap-over', title: `${l.limit.name}: ${l.peak} of ${l.max} at ${l.at}` }, h('span', { class: 'cap-pill-l' }, `${l.limit.name} ${l.peak}/${l.max}`), ' ', h('span', { class: 'cap-pill-t' }, l.at)));
     }
     if (c.untimed.length) {
       pills.push(h('span', {
         class: 'cap-pill cap-near cap-untimed',
         title: `Not counted — no times set:\n${c.untimed.map((u) => `• ${jobText(ctx, u.job)} (${personById.get(u.job.person_id)?.name || '—'})`).join('\n')}\nAdd start and end times so they count in the peak.`,
-      }, `⚠ ${c.untimed.length} untimed`, h('small', {}, ' add times')));
+      }, h('span', { class: 'cap-pill-l' }, `⚠ ${c.untimed.length} untimed`), ' ', h('span', { class: 'cap-pill-t' }, 'add times')));
     }
     const detail = [...c.limits.map((l) => `${l.limit.name}: peak ${l.peak}/${l.max}${l.peak ? ` at ${l.at}` : ''}`),
       ...[...c.models.values()].map((m) => `${m.name}: ${m.peak} at ${m.at}`)].join('\n');

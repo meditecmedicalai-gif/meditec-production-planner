@@ -114,8 +114,8 @@ export function dayTimeline({ ctx, rows, iso, isToday, admin, onJob, onFree, war
         h('div', { class: 'dt-track dt-occ' },
           a.batches.map((b) => h('div', {
             class: `dt-bench ${a.peak > 1 ? 'dt-bench-over' : ''}`, style: `left:${pos(b.s)}%;width:${Math.max(width(b.s, b.e), 0.8)}%`,
-            title: `${jobText(ctx, b.job)} · ${fmtMin(b.s)}–${fmtMin(b.e)}${b.perPump ? ` · ~${b.perPump} min each` : ''}`,
-          }, h('span', {}, `Bench busy ${fmtMin(b.s)}–${fmtMin(b.e)}`), b.pumps ? h('small', {}, ` · ${b.pumps} pumps${b.perPump ? ` · ~${b.perPump} min each` : ''}`) : null)),
+            title: `${jobText(ctx, b.job)} · ${fmtMin(b.s)}–${fmtMin(b.e)}${b.pumps ? ` · ${b.pumps} pumps` : ''}${b.perPump ? ` · ~${b.perPump} min each` : ''}`,
+          }, h('span', {}, `Bench busy ${fmtMin(b.s)}–${fmtMin(b.e)}`))),
           nowLine()),
         h('div', { class: 'dt-untimed' }, a.untimed.length ? h('span', { class: 'dt-ut-cta' }, `${a.untimed.length} untimed — add times`) : null));
     }

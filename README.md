@@ -217,8 +217,11 @@ Pumps are tested several at a time, so the planner adds up the pumps on test tha
   capacity row, the Day timeline and the export, with a prompt to add times.
 - **Capacity mode** per test area (Settings → Test areas → Edit): *Simultaneous* (Quality Check — pumps at the same
   moment add up) or *One at a time* (Medicare / Mediflex bench). On a one-at-a-time bench a job is a batch
-  processed pump by pump, so "Mediflex ×8, 13:30–15:30" counts as **1**: the row shows **"bench busy 13:30–15:30 ·
-  8 pumps · ~15 min each"** instead of 8/1, and only **overlapping jobs** on the bench are flagged.
+  processed pump by pump, so "Mediflex ×8, 13:30–15:30" counts as **1**: the row shows **"Bench busy 13:30–15:30"**
+  instead of 8/1 (hover or tab to it for "8 pumps · ~15 min each"), and only **overlapping jobs** on the bench are flagged.
+- Capacity pills always fit their own day column: they wrap onto two lines rather than spill into the next day, and
+  the occupancy graph sits on its own line. `npm run test:layout` checks this at 1280 / 1440 / 1920 px and on a phone,
+  in light and dark mode (needs Playwright: `npm i -D playwright && npx playwright install chromium`).
 - **Occupancy graph**: hover (or tab to) a Quality Check pill in the capacity row to see pumps on test across the
   day against the limit, e.g. "08:30–11:00: 7 · 11:00–13:30: 2 · 13:30–16:00: 7", and the free places. The Day
   timeline has the same graph as a row lined up with the time columns, plus a bench row.
