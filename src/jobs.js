@@ -102,3 +102,16 @@ export function clashes(job, others, taskById) {
   }
   return { equipment: eq, person };
 }
+
+/** "QPro 2000", "Any / mixed pump" or "Mixed: 2× QPro, 1× Mediflex". */
+export function pumpLabel(job, modelById, { short = false } = {}) {
+  if (job.any_pump) {
+    const mix = (job.pump_mix || []).filter((x) => x && x.qty > 0 && modelById.get(x.pump_model_id));
+    if (!mix.length) return 'Any / mixed pump';
+    return `Mixed: ${mix.map((x) => { const m = modelById.get(x.pump_model_id); return `${x.qty}× ${m.short_code || m.name}`; }).join(', ')}`;
+  }
+  const m = modelById.get(job.pump_model_id);
+  return m ? (short && m.short_code ? m.short_code : m.name) : null;
+}
+
+export const ABSENCE_TYPES = { holiday: 'Holiday', sick: 'Sick', training: 'Training', off_site: 'Off-site' };

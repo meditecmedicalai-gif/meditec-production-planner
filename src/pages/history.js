@@ -14,9 +14,13 @@ const TABLES = {
   demand_notes: 'Demand notes',
   build_types: 'Build types',
   equipment: 'Equipment',
+  recurring_jobs: 'Recurring jobs',
+  test_areas: 'Test areas',
+  test_limits: 'Test limits',
 };
 const ACTIONS = { insert: 'Added', update: 'Changed', delete: 'Deleted' };
-const NOUN = { assignments: 'job', absences: 'absence', demand_notes: 'demand note', build_types: 'build type', equipment: 'equipment' };
+const NOUN = { assignments: 'job', absences: 'absence', demand_notes: 'demand note', build_types: 'build type', equipment: 'equipment', recurring_jobs: 'recurring job', recurring_exceptions: 'recurring job date', test_areas: 'test area',
+  test_limits: 'test limit', test_limit_models: 'test limit model', test_area_shared_tasks: 'test area shared task' };
 const IGNORE = new Set(['id', 'created_at', 'created_by', 'updated_at', 'updated_by']);
 
 let tableFilter = '';
@@ -52,6 +56,8 @@ function fieldLabel(table, key) {
     start_date: 'From', end_date: 'To', absence_type: 'Type', name: 'Name', color: 'Colour',
     is_default: 'Default', active: 'Active', sort_order: 'Order',
     start_time: 'Start time', end_time: 'End time', end_date: 'Ends on', background: 'Runs', equipment_id: 'Equipment',
+    any_pump: 'Any / mixed pump', pump_mix: 'Actual pumps', recurring_id: 'Recurring job', recurring_date: 'Series date', recurring_detached: 'Edited on its own',
+    pattern: 'Repeats', weekdays: 'Days', interval_weeks: 'Every … weeks', title: 'Name', person_id: 'Person', max_pumps: 'Max pumps', skip_date: 'Skipped date',
   })[key] || key;
 }
 function fieldValue(key, v, L) {
@@ -65,6 +71,11 @@ function fieldValue(key, v, L) {
     case 'work_date': case 'needed_by': case 'start_date': case 'end_date': return day(v);
     case 'start_time': case 'end_time': return hm(v);
     case 'equipment_id': return L.equipment.get(v) || '(deleted equipment)';
+    case 'any_pump': case 'recurring_detached': return v ? 'yes' : 'no';
+    case 'pump_mix': return (v || []).map((x) => `${x.qty}× ${L.model.get(x.pump_model_id) || '?'}`).join(', ') || '—';
+    case 'recurring_id': return 'linked';
+    case 'weekdays': return (v || []).map((d) => ['', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'][d]).join(', ');
+    case 'skip_date': case 'recurring_date': return day(v);
     case 'priority': return PRIORITIES[v] || v;
     case 'status': return STATUSES[v] || v;
     case 'absence_type': return ABSENCE_TYPES[v] || v;
@@ -78,12 +89,16 @@ function describe(table, row, L) {
   const v = (k) => fieldValue(k, row[k], L);
   switch (table) {
     case 'assignments':
-      return [v('person_id'), v('work_date'), timeSummary(row), row.pump_model_id && v('pump_model_id'), row.build_type_id && v('build_type_id'),
+      return [v('person_id'), v('work_date'), timeSummary(row), row.any_pump ? 'Any / mixed pump' : row.pump_model_id && v('pump_model_id'), row.build_type_id && v('build_type_id'),
         v('task_id'), row.qty_target != null && `× ${row.qty_target}`,
         row.background === true && '⏱ background', row.background === false && 'attended',
         row.equipment_id && `on ${v('equipment_id')}`].filter(Boolean).join(' · ');
-    case 'equipment':
+    case 'equipment': case 'test_areas': case 'test_limits':
       return row.name;
+    case 'recurring_jobs':
+      return [row.title, row.person_id ? v('person_id') : 'not assigned', row.pattern === 'workdays' ? 'every working day' : row.pattern].filter(Boolean).join(' · ');
+    case 'recurring_exceptions':
+      return `skipped ${v('skip_date')}`;
     case 'absences':
       return `${v('person_id')} · ${v('absence_type')} · ${v('start_date')}${row.end_date !== row.start_date ? ` – ${v('end_date')}` : ''}`;
     case 'demand_notes':

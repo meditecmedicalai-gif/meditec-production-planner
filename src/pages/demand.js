@@ -11,7 +11,7 @@ export const STATUSES = { open: 'Open', planned: 'Planned', done: 'Done' };
 /** Loads demand notes plus the lookups needed to display them. */
 export async function loadDemand({ onlyActive = false } = {}) {
   let q = supabase.from('demand_notes')
-    .select('id, pump_model_id, build_type_id, quantity, needed_by, priority, comment, status, created_by, created_at, updated_by, updated_at');
+    .select('id, pump_model_id, any_pump, build_type_id, quantity, needed_by, priority, comment, status, created_by, created_at, updated_by, updated_at');
   if (onlyActive) q = q.in('status', ['open', 'planned']);
   const [notes, models, types, profiles] = await Promise.all([
     q,
@@ -68,7 +68,7 @@ export function headline(note, ctx) {
   const model = ctx.modelById.get(note.pump_model_id);
   const type = ctx.typeById.get(note.build_type_id);
   return h('span', { class: 'demand-headline' },
-    h('span', { class: 'demand-model' }, model ? model.name : 'General note'),
+    h('span', { class: 'demand-model' }, note.any_pump ? 'Any / mixed pump' : model ? model.name : 'General note'),
     type ? typeTag(type) : null,
     note.quantity != null ? h('span', { class: 'demand-qty' }, `× ${note.quantity}`) : null,
   );
@@ -114,7 +114,9 @@ function enumOptions(map, selected) {
 /** Add / edit a demand note. Viewers can only open their own notes here. */
 export function editDemand(ctx, note, onSaved) {
   const isNew = !note;
-  const model = h('select', {}, options(ctx.models, note?.pump_model_id, '— General / not model-specific —'));
+  const model = h('select', {}, options(ctx.models, note?.pump_model_id, '— General / not model-specific —'),
+    h('option', { value: '__any' }, 'Any / mixed pump (e.g. rental repairs)'));
+  if (note?.any_pump) model.value = '__any';
   const defaultType = ctx.types.find((t) => t.is_default);
   const type = h('select', {}, options(ctx.types, isNew ? defaultType?.id : note.build_type_id, '— Not specified —'));
   const qty = h('input', { type: 'number', min: 0, step: 1, inputmode: 'numeric', value: note?.quantity ?? '' });
@@ -132,7 +134,8 @@ export function editDemand(ctx, note, onSaved) {
     onClick: async () => {
       error.textContent = '';
       const values = {
-        pump_model_id: model.value || null,
+        pump_model_id: model.value && model.value !== '__any' ? model.value : null,
+        any_pump: model.value === '__any',
         build_type_id: type.value || null,
         quantity: qty.value === '' ? null : Number(qty.value),
         needed_by: neededBy.value || null,
@@ -140,7 +143,7 @@ export function editDemand(ctx, note, onSaved) {
         status: status.value,
         comment: comment.value.trim() || null,
       };
-      if (!values.pump_model_id && !values.comment) { error.textContent = 'Choose a pump model or write a comment.'; return false; }
+      if (!values.pump_model_id && !values.any_pump && !values.comment) { error.textContent = 'Choose a pump model or write a comment.'; return false; }
       if (values.quantity != null && (!Number.isInteger(values.quantity) || values.quantity < 0)) {
         error.textContent = 'Quantity must be a whole number (0 or more).'; return false;
       }
@@ -202,7 +205,7 @@ export async function renderDemand(main) {
 
   const matches = (n) =>
     (filters.status === 'all' || (filters.status === 'active' ? n.status !== 'done' : n.status === filters.status))
-    && (!filters.model || n.pump_model_id === filters.model)
+    && (!filters.model || (filters.model === '__any' ? n.any_pump : n.pump_model_id === filters.model))
     && (!filters.type || (filters.type === 'none' ? !n.build_type_id : n.build_type_id === filters.type))
     && (!filters.priority || n.priority === filters.priority)
     && (!filters.mine || n.created_by === me);
@@ -225,7 +228,7 @@ export async function renderDemand(main) {
       ['open', `Open (${countBy('open')})`], ['planned', `Planned (${countBy('planned')})`],
       ['done', `Done (${countBy('done')})`], ['all', `All (${ctx.notes.length})`],
     ])),
-    field('Pump model', sel('model', [['', 'All models'], ...ctx.models.map((m) => [m.id, m.name])])),
+    field('Pump model', sel('model', [['', 'All models'], ...ctx.models.map((m) => [m.id, m.name]), ['__any', 'Any / mixed pump']])),
     field('Build type', sel('type', [['', 'All types'], ...ctx.types.map((t) => [t.id, t.name]), ['none', 'Not specified']])),
     field('Priority', sel('priority', [['', 'Any priority'], ...Object.entries(PRIORITIES)])),
     h('div', { class: 'filter-check' },

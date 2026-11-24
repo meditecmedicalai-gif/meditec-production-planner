@@ -32,7 +32,10 @@ Live site (once deployed): `https://meditecmedicalai-gif.github.io/meditec-produ
 3. Do the same with each later migration in order: [`002_build_types.sql`](supabase/migrations/002_build_types.sql)
    (build types: Production / Trial / Rental / Customer), then
    [`003_background_jobs.sql`](supabase/migrations/003_background_jobs.sql) (background / overnight jobs, equipment), then
-   [`004_realtime.sql`](supabase/migrations/004_realtime.sql) (live updates; refreshed build-type colours).
+   [`004_realtime.sql`](supabase/migrations/004_realtime.sql) (live updates; refreshed build-type colours), then
+   [`005_capacity_recurring.sql`](supabase/migrations/005_capacity_recurring.sql) (test capacity, "Any / mixed pump",
+   recurring jobs). Its last result column says **Live updates: OK** — or lists tables to switch on by hand (see
+   *Live updates* below).
 
 ### 3. Lock down sign-in
 1. **Authentication → Sign In / Providers** (called *Providers* in some versions):
@@ -155,6 +158,16 @@ while connected. If you have a form open, the refresh waits until you close it. 
 Realtime with the same RLS rules: you only ever receive rows you are allowed to read, and the change log
 is never sent.
 
+### If live updates are not on for every table
+`rls_check.sql` names any table without live updates. In some Supabase projects the SQL Editor is not allowed
+to change the live-updates publication; switch the tables on in the dashboard instead:
+**Database → Publications → `supabase_realtime`** → turn on each listed table (or Table Editor → table →
+*Enable Realtime*). Then run `rls_check.sql` again. To see what is on right now:
+
+```sql
+select tablename from pg_publication_tables where pubname = 'supabase_realtime' order by 1;
+```
+
 ## Look & feel
 - **Light / dark mode**: the switch in the sidebar (or *More* on a phone); remembered on each device and
   defaults to the device's own setting.
@@ -163,6 +176,41 @@ is never sent.
 - **Logo**: [`public/brand/logo.png`](public/brand/logo.png) (transparent background, about 1040 × 330 px).
   To change it, replace that one file — no code changes. If the file is missing, a "Meditec" wordmark
   is shown instead. In dark mode it is shown in light ink automatically.
+
+## Test capacity
+Pumps are tested several at a time, so the planner adds up **testing jobs** that overlap in time and warns
+(it never blocks) when a limit is exceeded.
+- **Testing tasks** are marked in Settings → Tasks (🧪): Functional test / calibration, Quality testing,
+  Soak / burn-in test. For these, **quantity = number of pumps on test**.
+- Each **pump model has a default test area** (Settings → Pump models).
+- **Test areas** (Settings → Test areas & limits) each have a maximum: *Main test area* 7 (QPro 2000,
+  Simplex, MediAir, MediAir Turn, MATS, Bari-Med 1) and *Medicare / Mediflex test area* 1.
+- **Limit groups** inside an area: QPro 2000 max 7; MediAir + Simplex max 6 combined; MediAir Turn max 3.
+- **Tasks that share pumps**: in the Medicare / Mediflex area, calibration and quality testing can run at
+  the same time — together they count once, not as a clash.
+- **All areas together**: max 7 pumps on test at once (editable).
+- Times come from the jobs (overnight and background jobs included); a testing job **without times counts all
+  day**, so add times for accurate figures.
+- Where you see it: a **Test capacity** row at the top of each day in the planner ("Main 6/7 14:00"; amber =
+  full, red = over), ⚠ on the jobs involved, warnings in the job form before saving, and a **Test areas** card
+  on Today (pumps on test now and today's peak).
+
+## "Any / mixed pump"
+Repair-type tasks (Settings → Tasks → *Allows "Any / mixed pump"*) can be planned on **Any / mixed pump**,
+e.g. rental repairs. When the pumps are known you can list them ("2× QPro, 1× Mediflex"). Training warnings
+are skipped for these jobs, and summaries show them as their own **Any / mixed** row. Demand notes can also
+be for "Any / mixed pump".
+
+## Recurring jobs
+- In **Add work**, choose **Repeat**: every working day, every day, weekly on chosen days, or every N weeks;
+  with a *Repeat until* date or no end. Jobs are created **12 weeks ahead** and topped up automatically.
+- A recurring job can be saved **without a person** ("Not assigned yet"). The **🔁 Recurring jobs** panel on
+  the Week planner lists them — use **Assign…** to pick a person and the jobs are created. Migration 005 adds
+  a ready-made **Rental repairs** (Any pump, Rental, every working day, shift hours) waiting to be assigned.
+- Recurring jobs show **🔁**. Days when the person is absent are **skipped and flagged** in the planner.
+- Editing or deleting one asks **This one only / This and future / All**.
+- **Copy last week** never copies recurring jobs (they repeat by themselves).
+- **Stop** (in the panel) removes the jobs from today onwards and keeps past ones.
 
 ## Using the planner
 - **Weekly grid:** people × Mon–Fri. Use ‹ Prev / This week / Next › to move between weeks; the URL
@@ -183,8 +231,9 @@ is never sent.
   **Ends on** for jobs over several days. The job appears on every day it covers ("16:00 → 08:00 next
   day" on the first day, "cont. from Mon 16:00 · ends 08:00" after). Quantities are counted once, on the
   start day. No times = all day.
-- **Background / unattended jobs** (e.g. soak / burn-in tests) have a dashed outline and ⏱, and are
-  listed under the person's normal jobs. A task can be marked background in Settings; each job can
+- **Background / unattended jobs** (e.g. soak / burn-in tests) look clearly different from attended work:
+  attended jobs are solid cards; background jobs are indented, hatched, outlined with a dashed border, carry a
+  dark **⏱ Background** label and are listed under *Running in the background*. A task can be marked background in Settings; each job can
   override it (*Runs: Task default / Background / Attended*). Background jobs never count as a time clash
   for the person, and are only flagged for absence on the day they start (someone has to set them up).
 - **Equipment / test stations** (Settings) can be linked to a job. ⚠ warns when the same equipment is
@@ -241,3 +290,4 @@ This is a planning aid, not a controlled QMS record.
 5. ✅ Weekly summary by pump model and build type, History page, A4 print view
 6. ✅ Background & overnight jobs, job times, equipment / test stations
 7. ✅ Today dashboard, charts, live updates, Meditec visual redesign (light / dark)
+8. ✅ Test capacity, "Any / mixed pump" repairs, recurring jobs, clearer background jobs
