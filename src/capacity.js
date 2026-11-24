@@ -15,6 +15,19 @@
 //
 // Each area's maximum is absolute for that area (Quality Check: 7). Areas are
 // separate — there is no limit across areas.
+//
+// Capacity is the PEAK at any one moment, never a daily total: 7 in the
+// morning that finish at 11:00 and 7 more from 11:00 is 7/7. Intervals are
+// [start, end), so a job ending at 11:00 and one starting at 11:00 don't meet.
+//
+// Capacity mode per area:
+//   simultaneous — pumps on test at the same moment add up (Quality Check);
+//   sequential   — one pump at a time (Medicare / Mediflex bench): a job is a
+//                  batch processed pump by pump, so it counts as 1 whatever its
+//                  quantity; only overlapping jobs are flagged.
+//
+// Jobs without a start time are NOT counted in the peak (we can't know when
+// they run); they are listed as "untimed" so their times can be added.
 import { intervalOf } from './jobs.js';
 
 /** Build the lookup structure from loaded rows. */
@@ -71,6 +84,8 @@ export function stationMismatch(j, cfg) {
   return `${model} belongs on ${homeArea ? `the ${areaLabel(homeArea, cfg)}` : 'another test area'}, but is booked on the ${cfg.stationName.get(j.equipment_id)} station.`;
 }
 
+export const isSequential = (area) => area?.capacity_mode === 'sequential';
+
 /** Pumps on test among `active` jobs that pass `keep` (shared tasks count once per area and pump model). */
 function count(active, cfg, keep) {
   let total = 0;
@@ -78,7 +93,7 @@ function count(active, cfg, keep) {
   for (const j of active) {
     if (!keep(j)) continue;
     const area = testAreaOf(j, cfg);
-    const q = j.qty_target || 0;
+    const q = isSequential(cfg.areaById.get(area)) ? 1 : (j.qty_target || 0);
     const key = `${area}|${j.pump_model_id}`;
     if (cfg.shared.get(area)?.has(j.task_id)) sharedMax.set(key, Math.max(sharedMax.get(key) || 0, q));
     else total += q;
@@ -98,14 +113,33 @@ const hhmmOf = (minutesSinceEpoch) => {
  */
 export function capacityInWindow(jobs, cfg, from, to) {
   const tj = [];
+  const untimed = [];
   for (const j of jobs) {
     if (!isTestingJob(j, cfg)) continue;
     const [s, e] = intervalOf(j);
-    if (e > from && s < to) tj.push({ j, s: Math.max(s, from), e: Math.min(e, to) });
+    if (!(e > from && s < to)) continue;
+    if (!j.start_time) { untimed.push({ job: j, area: testAreaOf(j, cfg) }); continue; }
+    tj.push({ j, s: Math.max(s, from), e: Math.min(e, to) });
   }
   const pts = [...new Set([from, ...tj.map((x) => x.s), ...tj.map((x) => x.e)])].filter((p) => p >= from && p < to).sort((a, b) => a - b);
 
-  const areas = cfg.areas.map((a) => ({ area: a, label: areaLabel(a, cfg), peak: 0, at: null, max: a.max_pumps }));
+  const areas = cfg.areas.map((a) => {
+    const seq = isSequential(a);
+    const mine = tj.filter((x) => testAreaOf(x.j, cfg) === a.id);
+    // sequential: when the bench is in use, and the batches on it
+    const busy = [];
+    for (const x of [...mine].sort((p, q) => p.s - q.s)) {
+      const last = busy.at(-1);
+      if (last && x.s <= last[1]) last[1] = Math.max(last[1], x.e); else busy.push([x.s, x.e]);
+    }
+    return {
+      area: a, label: areaLabel(a, cfg), peak: 0, at: null, max: seq ? 1 : a.max_pumps, sequential: seq,
+      series: [], busy: busy.map(([s, e]) => [s - from, e - from]),
+      batches: mine.map((x) => ({ job: x.j, s: x.s - from, e: x.e - from, pumps: x.j.qty_target || 0,
+        perPump: x.j.qty_target > 0 ? Math.round((x.e - x.s) / x.j.qty_target) : null })),
+      untimed: untimed.filter((u) => u.area === a.id).map((u) => u.job),
+    };
+  });
   const limits = cfg.limits.map((l) => ({ limit: l, area: cfg.areaById.get(l.test_area_id), peak: 0, at: null, max: l.max_pumps }));
   const models = new Map();
   const jobMsgs = new Map();
@@ -120,14 +154,18 @@ export function capacityInWindow(jobs, cfg, from, to) {
 
   for (const p of pts) {
     const active = tj.filter((x) => x.s <= p && x.e > p).map((x) => x.j);
-    if (!active.length) continue;
     const at = hhmmOf(p);
+    if (!active.length) {
+      for (const a of areas) if (a.series.length && a.series.at(-1).n !== 0) a.series.push({ t: p - from, n: 0 });
+      continue;
+    }
 
     for (const a of areas) {
       const inArea = (j) => testAreaOf(j, cfg) === a.area.id;
       const n = count(active, cfg, inArea);
       if (n > a.peak) Object.assign(a, { peak: n, at });
-      if (n > a.max) flag(active, inArea, `${a.label}: ${n}/${a.max} pumps at ${at}`);
+      if (a.series.at(-1)?.n !== n) a.series.push({ t: p - from, n });
+      if (n > a.max) flag(active, inArea, a.sequential ? `${a.label}: ${n} jobs overlap at ${at} — one pump at a time` : `${a.label}: ${n}/${a.max} pumps at ${at}`);
     }
     for (const l of limits) {
       // limit groups apply within their own area
@@ -142,7 +180,8 @@ export function capacityInWindow(jobs, cfg, from, to) {
       if (!cur || n > cur.peak) models.set(m, { peak: n, at, name: cfg.modelName.get(m) });
     }
   }
-  return { areas, limits, models, jobMsgs };
+  for (const a of areas) if (!a.series.length || a.series[0].t > 0) a.series.unshift({ t: 0, n: 0 });
+  return { areas, limits, models, jobMsgs, untimed };
 }
 
 /** Capacity for one calendar day ("YYYY-MM-DD"). */
@@ -158,3 +197,15 @@ export function capacityAt(jobs, cfg, minute) {
 
 /** "ok" | "near" | "over" for colouring. */
 export const level = (peak, max) => (peak > max ? 'over' : peak >= max ? 'near' : 'ok');
+
+/** Step series → "08:30–11:00: 7 · 11:00–13:30: 2 · 13:30–16:00: 7" (only times with pumps on test). */
+export function occupancyText(series, end = 24 * 60) {
+  const fmt = (m) => `${String(m >= 1440 ? 24 : Math.floor(m / 60) % 24).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
+  const parts = [];
+  series.forEach((x, i) => {
+    if (!x.n) return;
+    const until = series[i + 1]?.t ?? end;
+    parts.push(`${fmt(x.t)}–${fmt(until)}: ${x.n}`);
+  });
+  return parts.join(' · ') || 'Nothing on test';
+}

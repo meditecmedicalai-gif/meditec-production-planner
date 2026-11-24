@@ -7,6 +7,7 @@ import { capacityForDay, isTestingJob, stationMismatch } from '../capacity.js';
 import { PATTERNS, describe as describeRepeat, isoDow, JOB_FIELDS, pick } from '../recurring.js';
 import { toISO, fromISO, addDays, today, fmtDayShort, fmtDayLong } from '../dates.js';
 import { placeOn, fmtMin } from '../daytime.js';
+import { hoursText } from '../hours.js';
 import { miniDay } from './dayTimeline.js';
 
 const ANY = '__any';
@@ -177,6 +178,7 @@ export function editAssignment({ ctx, person, iso, assignment, isoDays, personBy
   const capacityWarnings = () => {
     const jobs = proposed();
     if (!jobs.length || !isTestingJob(jobs[0], ctx.capacity)) return [];
+    if (!jobs[0].start_time) return [];
     const others = ctx.assignments.filter((x) => x.id !== assignment?.id);
     const msgs = [];
     for (const job of jobs) {
@@ -208,6 +210,7 @@ export function editAssignment({ ctx, person, iso, assignment, isoDays, personBy
     const p = personById.get(personSel.value);
     renderMini(p, first);
     const msgs = [];
+    const notes = [];
     if (p) {
       msgs.push(...ctx.warningsFor({ person_id: p.id, task_id: taskSel.value, ...pumps.values() }, p.name));
       for (const d of selectedDates()) {
@@ -215,6 +218,9 @@ export function editAssignment({ ctx, person, iso, assignment, isoDays, personBy
         if (ab) msgs.push(`${p.name} is marked ${ABSENCE_TYPES[ab.absence_type] || 'absent'} on ${fmtDayLong(fromISO(d))}.`);
       }
       for (const job of proposed()) {
+        const asSaved = { ...job, background: bgSel.value === '' ? null : bgSel.value === 'true' };
+        if (ctx.hoursWarnings) for (const m of ctx.hoursWarnings(asSaved, p.name, job.work_date)) if (!msgs.includes(m)) msgs.push(m);
+        if (ctx.breakNotes) for (const m of ctx.breakNotes(asSaved, p.name, job.work_date)) if (!notes.includes(m)) notes.push(m);
         if (!job.task_id) continue;
         for (const m of ctx.clashWarnings(job, personById)) if (!msgs.includes(m)) msgs.push(m);
       }
@@ -222,7 +228,8 @@ export function editAssignment({ ctx, person, iso, assignment, isoDays, personBy
     const wrongStation = first && stationMismatch(first, ctx.capacity);
     if (wrongStation) msgs.push(wrongStation);
     msgs.push(...capacityWarnings());
-    mount(warnBox, msgs.map((m) => h('p', { class: 'warn-box' }, `⚠ ${m}`)));
+    if (first && !first.start_time && isTestingJob(first, ctx.capacity)) notes.push('No times set — this test job is not counted in test capacity until you add a start and end time.');
+    mount(warnBox, msgs.map((m) => h('p', { class: 'warn-box' }, `⚠ ${m}`)), notes.map((m) => h('p', { class: 'note-box' }, /^Runs across/.test(m) ? `⏰ ${m} Fine if they take it during the job.` : `ℹ ${m}`)));
     return msgs;
   };
   /** The person's day as a mini timeline, with this job on it. */
@@ -236,9 +243,10 @@ export function editAssignment({ ctx, person, iso, assignment, isoDays, personBy
     const proposedSpan = job.start_time ? placeOn(job, d) : null;
     mount(miniBox,
       h('div', { class: 'mini-head' }, h('b', {}, `${p.name.split(' ')[0]}’s day`), ` · ${fmtDayShort(fromISO(d))}`,
+        ctx.hoursFor ? h('span', { class: 'muted small' }, ` · hours ${hoursText(ctx.hoursFor(p.id, d))}`) : null,
         !job.start_time ? h('span', { class: 'muted small' }, ' · set a start time to place this job') : null),
       miniDay({
-        ctx, jobs: others, iso: d, hours: ctx.hours, absent: ctx.absenceOn(p.id, d),
+        ctx, jobs: others, iso: d, hours: ctx.hoursFor ? ctx.hoursFor(p.id, d) : ctx.hours, absent: ctx.absenceOn(p.id, d),
         proposed: proposedSpan ? { ...proposedSpan, bg } : null,
         onPick: (s, e) => { startTime.value = fmtMin(s); endTime.value = fmtMin(e); refresh(); },
       }));

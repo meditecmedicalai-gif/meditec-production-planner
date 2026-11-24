@@ -6,6 +6,8 @@ import { defineConfig } from 'vite';
 export default defineConfig({
   base: './',
   build: {
+    // The Excel library (~950 kB) is only downloaded when someone clicks "Export to Excel".
+    chunkSizeWarningLimit: 1000,
     rollupOptions: {
       output: {
         // Separate, long-cacheable files for the two big libraries.

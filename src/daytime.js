@@ -86,13 +86,14 @@ export function personDay({ jobs, iso, isBg, hours, absent = null }) {
     (isBg(job) ? background : attended).push({ job, ...placeOn(job, iso) });
   }
   attended.sort(byStart); background.sort(byStart);
+  const nonWorking = hours?.works === false;
   const breakList = breaks.map((b) => [b.s, b.e]);
-  const window = absent ? [] : subtract([[ws, we]], breakList);
-  const busy = absent ? [] : merge(attended.map((x) => [Math.max(x.s, ws), Math.min(x.e, we)]));
+  const window = absent || nonWorking ? [] : subtract([[ws, we]], breakList);
+  const busy = absent || nonWorking ? [] : merge(attended.map((x) => [Math.max(x.s, ws), Math.min(x.e, we)]));
   const busyIn = subtract(window, subtract(window, busy)); // busy ∩ working time
   const free = subtract(window, busy).filter(([s, e]) => e - s >= 5);
   return {
-    attended, background, untimed, busy: busyIn, free, breaks, ws, we, absent,
+    attended, background, untimed, busy: busyIn, free, breaks: nonWorking ? [] : breaks, ws, we, absent, nonWorking, hours,
     busyMin: total(busyIn), freeMin: total(free),
   };
 }
@@ -103,8 +104,9 @@ export function personDay({ jobs, iso, isBg, hours, absent = null }) {
  */
 export function statusAt(day, m) {
   if (day.absent) return { kind: 'absent' };
-  if (m < day.ws) return { kind: 'off', text: `Starts ${fmtMin(day.ws)}` };
-  if (m >= day.we) return { kind: 'off', text: 'Shift finished' };
+  if (day.nonWorking) return { kind: 'off', text: 'Not working today' };
+  if (m < day.ws) return { kind: 'off', text: `Not started yet — starts ${fmtMin(day.ws)}` };
+  if (m >= day.we) return { kind: 'off', text: 'Finished for the day' };
   const brk = day.breaks.find((b) => m >= b.s && m < b.e);
   if (brk) return { kind: 'break', label: brk.label, until: brk.e };
   const now = day.attended.filter((x) => x.s <= m && x.e > m);

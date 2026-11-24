@@ -219,12 +219,19 @@ $$;
 -- (default 12 weeks ahead). Skips days the person is absent and dates removed
 -- with "this one only". Runs with the caller's rights, so only an admin can
 -- create jobs (RLS); for anyone else it does nothing.
+-- (008 has a newer version that also skips non-working days; it is kept if present.)
+do $do$
+begin
+  if coalesce(pg_get_functiondef(to_regprocedure('public.extend_recurring_jobs(date)')), '') like '%person_works%' then
+    return;
+  end if;
+  execute $fn$
 create or replace function public.extend_recurring_jobs(p_until date default null)
 returns integer
 language plpgsql
 security invoker
 set search_path = ''
-as $$
+as $body$
 declare
   until_d date := coalesce(p_until, current_date + 84);
   r public.recurring_jobs;
@@ -255,7 +262,10 @@ begin
   end loop;
   return added;
 end;
-$$;
+$body$
+  $fn$;
+end;
+$do$;
 
 -- Seed: rental repairs every working day, any pump, Rental, not assigned yet.
 -- No times: you set them yourself when assigning it (🔁 Recurring jobs panel).

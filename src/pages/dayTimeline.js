@@ -5,13 +5,18 @@ import { timeLabel, hm, ABSENCE_TYPES } from '../jobs.js';
 import { personDay, fmtMin, fmtDur, toMin } from '../daytime.js';
 import { fmtDayShort } from '../dates.js';
 import { fromISO } from '../dates.js';
+import { level, occupancyText } from '../capacity.js';
+import { occupancySvg, freeSlotsText } from './occupancy.js';
 
 const SLOT = 30; // minutes per column
 
 /** Visible range: a little before the start and after the end of the working day. */
-export function viewRange(day) {
-  const T0 = Math.max(0, Math.floor((day.ws - 60) / SLOT) * SLOT);
-  const T1 = Math.min(24 * 60, Math.ceil((day.we + 60) / SLOT) * SLOT);
+export function viewRange(...days) {
+  const working = days.filter((d) => d && !d.nonWorking);
+  const ws = Math.min(...(working.length ? working : days).map((d) => d.ws));
+  const we = Math.max(...(working.length ? working : days).map((d) => d.we));
+  const T0 = Math.max(0, Math.floor((ws - 60) / SLOT) * SLOT);
+  const T1 = Math.min(24 * 60, Math.ceil((we + 60) / SLOT) * SLOT);
   return { T0, T1 };
 }
 
@@ -41,7 +46,7 @@ export function busyFreeText(day) {
 }
 
 export function dayBar(day) {
-  if (day.absent) return null;
+  if (day.absent || day.nonWorking) return null;
   const span = day.we - day.ws;
   const pct = (m) => `${((Math.min(day.we, Math.max(day.ws, m)) - day.ws) / span) * 100}%`;
   const w = (s, e) => `${((Math.min(day.we, e) - Math.max(day.ws, s)) / span) * 100}%`;
@@ -68,20 +73,24 @@ export function dayBar(day) {
  * handlers: onJob(job, person), onFree(person, s, e), warningsOf(job, person) → [msgs]
  * Returns { el, placeNow(minutes) }.
  */
-export function dayTimeline({ ctx, rows, iso, isToday, admin, onJob, onFree, warningsOf }) {
+export function dayTimeline({ ctx, rows, iso, isToday, admin, onJob, onFree, warningsOf, notesOf = () => [], capacity }) {
   const sample = ctx.dayOf(rows[0]?.id, iso);
-  const { T0, T1 } = viewRange(sample);
+  const { T0, T1 } = viewRange(...rows.map((p) => ctx.dayOf(p.id, iso)));
   const cols = (T1 - T0) / SLOT;
   const pos = (m) => ((Math.min(T1, Math.max(T0, m)) - T0) / (T1 - T0)) * 100;
   const width = (s, e) => Math.max(pos(e) - pos(s), 0);
   const slotTimes = []; for (let m = T0; m < T1; m += SLOT) slotTimes.push(m);
   const nowLines = [];
 
-  const breakCols = () => sample.breaks.map((b) => h('div', { class: 'dt-break', style: `left:${pos(b.s)}%;width:${width(b.s, b.e)}%`, title: `${b.label} ${fmtMin(b.s)}–${fmtMin(b.e)}` }));
-  const offHours = () => [
-    sample.ws > T0 ? h('div', { class: 'dt-off', style: `left:0;width:${pos(sample.ws)}%` }) : null,
-    sample.we < T1 ? h('div', { class: 'dt-off', style: `left:${pos(sample.we)}%;right:0` }) : null,
-  ];
+  // each person's own break / lunch and working window
+  const breakCols = (day) => day.breaks.map((b) => h('div', { class: 'dt-break', style: `left:${pos(b.s)}%;width:${width(b.s, b.e)}%`, title: `${b.label} ${fmtMin(b.s)}–${fmtMin(b.e)}` },
+    width(b.s, b.e) > 2.2 ? h('span', { class: 'dt-break-tag' }, b.label) : null));
+  const offHours = (day) => (day.nonWorking
+    ? [h('div', { class: 'dt-off dt-off-day', style: 'left:0;right:0' })]
+    : [
+        day.ws > T0 ? h('div', { class: 'dt-off', style: `left:0;width:${pos(day.ws)}%`, title: `Before ${fmtMin(day.ws)} — outside working hours` }) : null,
+        day.we < T1 ? h('div', { class: 'dt-off', style: `left:${pos(day.we)}%;right:0`, title: `After ${fmtMin(day.we)} — outside working hours` }) : null,
+      ]);
   const nowLine = () => {
     if (!isToday) return null;
     const el = h('div', { class: 'dt-now', 'aria-hidden': 'true' });
@@ -93,10 +102,33 @@ export function dayTimeline({ ctx, rows, iso, isToday, admin, onJob, onFree, war
     h('div', { class: 'dt-name' }, 'Person'),
     h('div', { class: 'dt-track dt-scale' },
       slotTimes.map((m) => h('span', { class: `dt-tick ${m % 60 === 0 ? 'hour' : ''}`, style: `left:${pos(m)}%` }, fmtMin(m))),
-      sample.breaks.map((b) => h('span', { class: 'dt-break-label', style: `left:${pos(b.s)}%;width:${width(b.s, b.e)}%` }, b.label)),
       nowLine()),
     h('div', { class: 'dt-untimed dt-untimed-head' }, 'No time set'),
   );
+
+  // Test capacity across the day, aligned with the timeline
+  const capRows = (capacity?.areas || []).filter((a, i) => i === 0 || a.peak > 0 || a.untimed.length).map((a) => {
+    if (a.sequential) {
+      return h('div', { class: 'dt-row dt-cap-row', 'data-area': a.area.id },
+        h('div', { class: 'dt-name' }, h('b', {}, a.label), h('small', {}, a.busy.length ? 'one pump at a time' : 'free all day')),
+        h('div', { class: 'dt-track dt-occ' },
+          a.batches.map((b) => h('div', {
+            class: `dt-bench ${a.peak > 1 ? 'dt-bench-over' : ''}`, style: `left:${pos(b.s)}%;width:${Math.max(width(b.s, b.e), 0.8)}%`,
+            title: `${jobText(ctx, b.job)} · ${fmtMin(b.s)}–${fmtMin(b.e)}${b.perPump ? ` · ~${b.perPump} min each` : ''}`,
+          }, h('span', {}, `Bench busy ${fmtMin(b.s)}–${fmtMin(b.e)}`), b.pumps ? h('small', {}, ` · ${b.pumps} pumps${b.perPump ? ` · ~${b.perPump} min each` : ''}`) : null)),
+          nowLine()),
+        h('div', { class: 'dt-untimed' }, a.untimed.length ? h('span', { class: 'dt-ut-cta' }, `${a.untimed.length} untimed — add times`) : null));
+    }
+    return h('div', { class: 'dt-row dt-cap-row', 'data-area': a.area.id },
+      h('div', { class: 'dt-name' }, h('b', {}, `${a.label}`), h('small', { class: `cap-${level(a.peak, a.max)}-txt` }, `peak ${a.peak}/${a.max}${a.peak ? ` at ${a.at}` : ''}`)),
+      h('div', { class: 'dt-track dt-occ', title: `${occupancyText(a.series)}\n${freeSlotsText(a.series, a.max, T0, T1)}` },
+        occupancySvg(a.series, { max: a.max, T0, T1, height: 46, label: a.label }),
+        h('span', { class: 'dt-occ-max' }, `limit ${a.max}`),
+        nowLine()),
+      h('div', { class: 'dt-untimed' }, a.untimed.length
+        ? h('span', { class: 'dt-ut-cta', title: a.untimed.map((j) => jobText(ctx, j)).join('\n') }, `⚠ ${a.untimed.length} untimed — not counted, add times`)
+        : h('span', { class: 'muted small' }, freeSlotsText(a.series, a.max, Math.max(T0, sample.ws), Math.min(T1, sample.we)).split(' · ').slice(0, 3).join(' · '))));
+  });
 
   const rowEls = rows.map((p) => {
     const day = ctx.dayOf(p.id, iso);
@@ -106,7 +138,7 @@ export function dayTimeline({ ctx, rows, iso, isToday, admin, onJob, onFree, war
     const bgs = day.background;
     const track = h('div', {
       class: 'dt-track', style: `--lanes:${nLanes};--bgs:${bgs.length}`,
-    }, offHours(), breakCols());
+    }, offHours(day), breakCols(day));
 
     // free gaps
     for (const [s, e] of day.free) {
@@ -126,6 +158,7 @@ export function dayTimeline({ ctx, rows, iso, isToday, admin, onJob, onFree, war
       const a = x.job;
       const type = ctx.typeById.get(a.build_type_id);
       const warns = warningsOf(a, p);
+      const notes = notesOf(a, p);
       const cutL = x.s < T0; const cutR = x.e > T1;
       const tl = timeLabel(a, iso) || `${fmtMin(x.s)}–${fmtMin(x.e)}`;
       track.append(h('button', {
@@ -133,10 +166,10 @@ export function dayTimeline({ ctx, rows, iso, isToday, admin, onJob, onFree, war
         class: `dt-job ${warns.length ? 'dt-warn' : ''} ${cutL ? 'cut-l' : ''} ${cutR ? 'cut-r' : ''}`,
         style: `left:${pos(x.s)}%;width:${width(x.s, x.e)}%;--lane:${x.lane};${type ? `--type-color:${type.color}` : ''}`,
         title: [jobText(ctx, a), type?.name, tl, a.equipment_id ? `Equipment: ${ctx.equipmentById.get(a.equipment_id)?.name}` : null,
-          a.recurring_id ? 'Recurring job' : null, a.notes, ...warns.map((w) => `⚠ ${w}`)].filter(Boolean).join('\n'),
+          a.recurring_id ? 'Recurring job' : null, a.notes, ...warns.map((w) => `⚠ ${w}`), ...notes.map((w) => `⏰ ${w}`)].filter(Boolean).join('\n'),
         onclick: () => onJob(a, p),
       },
-        h('span', { class: 'dt-job-l' }, warns.length ? h('b', { class: 'chip-warn-icon' }, '!') : null, a.recurring_id ? '🔁 ' : null, jobText(ctx, a)),
+        h('span', { class: 'dt-job-l' }, warns.length ? h('b', { class: 'chip-warn-icon' }, '!') : null, notes.length ? '⏰ ' : null, a.recurring_id ? '🔁 ' : null, jobText(ctx, a)),
         h('span', { class: 'dt-job-t' }, cutL ? `‹ ${tl}` : cutR ? `${tl} ›` : `${hm(a.start_time) && x.s >= 0 ? fmtMin(x.s) : '…'}–${x.e <= 1440 ? fmtMin(x.e) : `${fmtMin(x.e)} +1`}`),
       ));
     }
@@ -156,6 +189,8 @@ export function dayTimeline({ ctx, rows, iso, isToday, admin, onJob, onFree, war
     if (absence) {
       track.append(h('div', { class: `dt-absent absence-${absence.absence_type}` }, ABSENCE_TYPES[absence.absence_type] || 'Absent',
         absence.end_date > iso ? ` until ${fmtDayShort(fromISO(absence.end_date))}` : ''));
+    } else if (day.nonWorking) {
+      track.append(h('div', { class: 'dt-nonwork' }, 'Not working today', day.hours?.oneOff ? ' (one-off)' : day.hours?.pattern ? ` · ${day.hours.pattern.name}` : ''));
     }
     track.append(nowLine());
 
@@ -168,13 +203,15 @@ export function dayTimeline({ ctx, rows, iso, isToday, admin, onJob, onFree, war
         }, h('span', {}, jobText(ctx, a)), admin ? h('span', { class: 'dt-ut-cta' }, '+ Add times') : h('span', { class: 'dt-ut-cta' }, 'Times not set'));
       }));
 
-    return h('div', { class: `dt-row ${absence ? 'is-absent' : ''}`, 'data-person': p.id },
-      h('div', { class: 'dt-name' }, h('b', {}, p.name), h('small', {}, absence ? (ABSENCE_TYPES[absence.absence_type] || 'Absent')
-        : busyFreeText(day))),
+    const hrs = day.hours;
+    return h('div', { class: `dt-row ${absence ? 'is-absent' : ''} ${day.nonWorking ? 'is-offday' : ''}`, 'data-person': p.id },
+      h('div', { class: 'dt-name' }, h('b', {}, p.name),
+        h('small', { class: 'dt-hours' }, absence ? (ABSENCE_TYPES[absence.absence_type] || 'Absent') : day.nonWorking ? 'Not working' : `${fmtMin(day.ws)}–${fmtMin(day.we)}${hrs?.oneOff ? ' (today only)' : ''}`),
+        absence || day.nonWorking ? null : h('small', {}, busyFreeText(day))),
       track, untimedCell);
   });
 
-  const el = h('div', { class: 'dt-scroll', style: `--cols:${cols}` }, h('div', { class: 'dt-grid' }, header, rowEls));
+  const el = h('div', { class: 'dt-scroll', style: `--cols:${cols}` }, h('div', { class: 'dt-grid' }, header, capRows, rowEls));
   return {
     el,
     /** Scroll so minute `m` sits just right of the names (narrow screens). */
@@ -220,10 +257,12 @@ export function miniDay({ ctx, jobs, iso, hours, absent, proposed, onPick }) {
       day.background.filter((x) => !x.untimed).map((x) => h('span', { class: 'mini-bg', style: `left:${pos(x.s)}%;width:${width(x.s, x.e)}%`, title: `⏱ ${jobText(ctx, x.job)}` })),
       proposed ? h('span', { class: `mini-this ${clash ? 'clash' : ''} ${proposed.bg ? 'bg' : ''}`, style: `left:${pos(proposed.s)}%;width:${width(proposed.s, proposed.e)}%`, title: 'This job' }) : null,
       absent ? h('span', { class: 'mini-absent' }, ABSENCE_TYPES[absent.absence_type] || 'Absent') : null,
+      !absent && day.nonWorking ? h('span', { class: 'mini-absent' }, 'Not working') : null,
     ),
     h('div', { class: 'mini-scale' }, ticks.map((m) => h('span', { style: `left:${pos(m)}%` }, fmtMin(m).replace(/:00$/, '')))),
     h('p', { class: `mini-cap ${clash ? 'clash' : ''}` },
       absent ? 'Absent this day.'
+        : day.nonWorking ? 'Not a working day for this person.'
         : clash ? '⚠ Overlaps another attended job — see the red block.'
           : day.free.length ? `Free: ${freeTxt}${onPick ? ' · click a green gap to use it' : ''}` : 'No free time left in the working day.',
       day.untimed.length ? ` · ${day.untimed.length} other job${day.untimed.length === 1 ? '' : 's'} with no time set` : ''),
