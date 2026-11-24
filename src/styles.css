@@ -347,3 +347,75 @@ button.absence { cursor: pointer; }
   .planner-phone { display: block; }
   .week-label { width: 100%; margin: .3rem 0 0; }
 }
+
+/* ---------- phase 4: demand & notes ---------- */
+.form-grid-3 { grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); }
+
+.filter-bar { display: flex; flex-wrap: wrap; align-items: flex-end; gap: .75rem 1rem; padding: .9rem 1.1rem; margin-bottom: .5rem; }
+.filter-bar .field { min-width: 150px; flex: 1 1 150px; }
+.filter-bar .field label { font-size: .78rem; color: var(--muted); }
+.filter-bar select { padding: .4rem .55rem; }
+.filter-check { padding-bottom: .45rem; }
+.result-count { margin: .25rem 0 .6rem; }
+
+.demand-list { display: flex; flex-direction: column; gap: .6rem; }
+.demand-card { padding: .85rem 1rem; border-left: 4px solid var(--border); display: flex; flex-direction: column; gap: .45rem; }
+.demand-card.is-done { opacity: .7; }
+.demand-top { display: flex; justify-content: space-between; align-items: flex-start; gap: .4rem 1rem; flex-wrap: wrap; }
+.demand-headline { display: inline-flex; align-items: center; flex-wrap: wrap; gap: .2rem .45rem; }
+.demand-model { font-weight: 650; }
+.demand-qty { font-weight: 650; font-variant-numeric: tabular-nums; }
+.demand-badges { display: inline-flex; flex-wrap: wrap; gap: .3rem; align-items: center; }
+.demand-comment { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.demand-foot { display: flex; justify-content: space-between; align-items: center; gap: .4rem 1rem; flex-wrap: wrap; }
+.demand-actions { display: flex; gap: .3rem; flex-wrap: wrap; }
+
+.prio-edge-urgent { border-left-color: #b42318 !important; }
+.prio-edge-high { border-left-color: #d97706 !important; }
+.prio-edge-normal { border-left-color: var(--border) !important; }
+.prio-edge-low { border-left-color: transparent !important; }
+
+.due, .prio, .status {
+  display: inline-block; font-size: .72rem; font-weight: 650; line-height: 1.5; white-space: nowrap;
+  padding: 0 .45rem; border-radius: 99px; background: var(--surface-2); color: var(--muted);
+}
+.due-overdue { background: var(--danger-soft); color: var(--danger); }
+.due-soon { background: var(--warn-soft); color: var(--warn); }
+.due-none, .due-done { background: transparent; border: 1px dashed var(--border); }
+.prio-urgent { background: var(--danger); color: #fff; }
+.prio-high { background: var(--warn-soft); color: var(--warn); }
+.prio-low { background: transparent; border: 1px solid var(--border); }
+.status-open { background: var(--accent-soft); color: var(--accent); }
+.status-planned { background: color-mix(in srgb, #0369a1 14%, transparent); color: #0369a1; }
+.status-done { background: color-mix(in srgb, var(--success) 14%, transparent); color: var(--success); }
+@media (prefers-color-scheme: dark) { .status-planned { color: #7dd3fc; } }
+
+/* planner panel */
+.demand-panel { padding: 0; margin-bottom: .9rem; overflow: hidden; }
+.panel-toggle {
+  display: flex; align-items: center; gap: .5rem; flex-wrap: wrap; width: 100%;
+  font: inherit; color: var(--text); background: none; border: 0; cursor: pointer; text-align: left;
+  padding: .75rem 1.1rem;
+}
+.panel-toggle:hover { background: var(--surface-2); }
+.panel-title { font-weight: 650; }
+.panel-caret { transition: transform .15s; color: var(--muted); }
+.panel-toggle[aria-expanded="true"] .panel-caret { transform: rotate(90deg); }
+.panel-body { border-top: 1px solid var(--border); }
+.demand-rows { list-style: none; margin: 0; padding: 0; max-height: 280px; overflow-y: auto; }
+.demand-rows li { border-bottom: 1px solid var(--border); }
+.demand-row {
+  display: flex; justify-content: space-between; align-items: center; gap: .3rem 1rem; flex-wrap: wrap; width: 100%;
+  font: inherit; font-size: .88rem; color: var(--text); text-align: left; cursor: pointer;
+  background: none; border: 0; border-left: 4px solid var(--border); padding: .5rem 1.1rem .5rem calc(1.1rem - 4px);
+}
+.demand-row:hover { background: var(--surface-2); }
+.demand-row-main { display: flex; align-items: center; gap: .3rem .75rem; flex-wrap: wrap; min-width: 0; flex: 1 1 260px; }
+.demand-row-comment { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 46ch; }
+.panel-foot { display: flex; justify-content: space-between; align-items: center; padding: .6rem 1.1rem; gap: 1rem; }
+.panel-empty { margin: 0; padding: .75rem 1.1rem 0; }
+
+@media (max-width: 720px) {
+  .filter-bar .field { flex-basis: calc(50% - .5rem); min-width: 0; }
+  .demand-row-comment { max-width: 100%; white-space: normal; }
+}

@@ -67,8 +67,11 @@ is recreated automatically; set their name/role again with the SQL above).
 
 ### 5. Check the security (optional, recommended)
 Open [`supabase/tests/rls_check.sql`](supabase/tests/rls_check.sql), replace `VIEWER_EMAIL_HERE`
-and `ADMIN_EMAIL_HERE` with the two e-mails, paste it into the SQL Editor and run it.
-Every row in the result should say **PASS**. It rolls everything back, so no test data is kept.
+and `ADMIN_EMAIL_HERE` (near the top) with the two e-mails, paste it into the SQL Editor and click **Run**.
+
+The result appears as an **error** on purpose: its message starts with
+`RLS CHECK FINISHED: N passed, 0 failed` and lists every check (failures first). Stopping with an
+error is what undoes all the test data, so nothing is left behind. Every line should start with **PASS**.
 
 ### 6. Connect GitHub Pages
 1. In Supabase, open **Project Settings → API** (or **Data API / API Keys**) and copy:
@@ -143,6 +146,18 @@ src/pages/                         one file per page
   saved without one. Tasks that don't need a pump (Training, Stock room / 5S, Other) can have no type.
 - **On a phone** the planner shows one day at a time with day tabs.
 
+## Demand & Notes
+- Anyone can post a note: pump model (or a general note), build type, quantity, needed-by date,
+  priority, comment and status (**Open** = not yet planned, **Planned** = in the schedule,
+  **Done** = delivered / no longer needed).
+- Viewers can edit and change the status of **their own** notes; the admin can edit any note and is the
+  only one who can delete. Each note shows who posted it and who last edited it.
+- Filter by status, pump model, build type, priority or "only my notes". Filters are remembered on
+  that device.
+- The **Planner** shows an "Open demand" panel (open + planned notes, overdue first) above the grid, with
+  counts of overdue items and items due in the displayed week. Click a note to open it; the panel can be
+  collapsed.
+
 ## Change history (audit log)
 Every insert, update and delete on **assignments**, **absences**, **demand notes** and **build types** is recorded
 automatically in `audit_log` (who, when, old and new values) by database triggers. Only admins can
@@ -153,5 +168,5 @@ This is a planning aid, not a controlled QMS record.
 1. ✅ Database, security & sign-in
 2. ✅ People & skills matrix, Settings (pump models, tasks, working hours)
 3. ✅ Weekly planner, absences and build types
-4. Demand & notes (with build-type filter)
+4. ✅ Demand & notes (with build-type filter) and open-demand panel on the planner
 5. Weekly summary by pump model and build type, History view, print view

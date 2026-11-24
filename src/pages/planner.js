@@ -1,6 +1,7 @@
 import { h, mount, toast, reportError, openModal, confirmDialog, field, checkbox } from '../ui.js';
 import { supabase } from '../supabase.js';
 import { auth } from '../auth.js';
+import { demandPanel } from './demand.js';
 import {
   toISO, fromISO, addDays, mondayOf, today, isoWeek,
   fmtDayShort, fmtDayLong, fmtWeekday, fmtRange, fmtDate,
@@ -92,7 +93,7 @@ export async function renderPlanner(main) {
   }
 
   mount(main, h('p', { class: 'muted' }, 'Loading week…'));
-  const data = await loadWeek(monday);
+  const [data, panel] = await Promise.all([loadWeek(monday), demandPanel(monday, () => renderPlanner(main))]);
   if (reportError(data.error, 'Loading the planner')) return;
   const ctx = makeCtx(data);
   const admin = auth.isAdmin;
@@ -231,6 +232,7 @@ export async function renderPlanner(main) {
   mount(main,
     h('div', { class: 'page-head' }, h('h1', { class: 'page-title' }, 'Planner')),
     toolbar,
+    panel,
     legend,
     h('section', { class: 'card card-flush planner-desktop' }, grid),
     phone,
