@@ -2,6 +2,8 @@ import { h, mount, toast, reportError, openModal, confirmDialog, field, checkbox
 import { supabase } from '../supabase.js';
 import { auth } from '../auth.js';
 import { demandPanel } from './demand.js';
+import { loadSummaryDemand, summaryCard } from './summary.js';
+import { hhmm } from '../ui.js';
 import {
   toISO, fromISO, addDays, mondayOf, today, isoWeek,
   fmtDayShort, fmtDayLong, fmtWeekday, fmtRange, fmtDate,
@@ -93,8 +95,14 @@ export async function renderPlanner(main) {
   }
 
   mount(main, h('p', { class: 'muted' }, 'Loading week…'));
-  const [data, panel] = await Promise.all([loadWeek(monday), demandPanel(monday, () => renderPlanner(main))]);
-  if (reportError(data.error, 'Loading the planner')) return;
+  const [data, panel, summaryDemand, hoursRes] = await Promise.all([
+    loadWeek(monday),
+    demandPanel(monday, () => renderPlanner(main)),
+    loadSummaryDemand(),
+    supabase.from('app_settings').select('work_start, work_end, break_time, lunch_time').eq('id', 1).maybeSingle(),
+  ]);
+  if (reportError(data.error || summaryDemand.error, 'Loading the planner')) return;
+  const hours = hoursRes.data;
   const ctx = makeCtx(data);
   const admin = auth.isAdmin;
   const reload = () => renderPlanner(main);
@@ -179,9 +187,23 @@ export async function renderPlanner(main) {
       h('button', { class: 'btn btn-sm', 'aria-label': 'Next week', onclick: () => goToWeek(addDays(monday, 7)) }, 'Next ›'),
       h('h2', { class: 'week-label' }, weekLabel),
     ),
-    admin ? h('div', { class: 'planner-actions' },
-      h('button', { class: 'btn btn-sm', onclick: () => copyLastWeek({ ctx, monday, isoDays, rows, onDone: reload }) }, 'Copy last week'),
-    ) : null,
+    h('div', { class: 'planner-actions' },
+      h('button', { class: 'btn btn-sm', onclick: () => document.getElementById('weekly-summary')?.scrollIntoView({ behavior: 'smooth' }) }, 'Summary ↓'),
+      h('button', { class: 'btn btn-sm', title: 'Print this week on A4 landscape', onclick: () => window.print() }, 'Print'),
+      admin ? h('button', { class: 'btn btn-sm', onclick: () => copyLastWeek({ ctx, monday, isoDays, rows, onDone: reload }) }, 'Copy last week') : null,
+    ),
+  );
+
+  // Only visible when printing (see @media print in styles.css).
+  const printHeader = h('div', { class: 'print-only print-header' },
+    h('div', {},
+      h('div', { class: 'print-title' }, `Pump Room Plan — ${weekLabel}`),
+      hours ? h('div', { class: 'print-sub' },
+        `Hours ${hhmm(hours.work_start)}–${hhmm(hours.work_end)} · Break ${hhmm(hours.break_time)} · Lunch ${hhmm(hours.lunch_time)}`) : null,
+    ),
+    h('div', { class: 'print-sub print-right' },
+      'Meditec Medical Ltd', h('br'),
+      `Printed ${fmtDate(new Date())} by ${auth.profile?.full_name || auth.profile?.email || ''}`),
   );
 
   const legend = h('div', { class: 'legend' },
@@ -230,12 +252,14 @@ export async function renderPlanner(main) {
   );
 
   mount(main,
-    h('div', { class: 'page-head' }, h('h1', { class: 'page-title' }, 'Planner')),
+    printHeader,
+    h('div', { class: 'page-head no-print' }, h('h1', { class: 'page-title' }, 'Planner')),
     toolbar,
     panel,
     legend,
     h('section', { class: 'card card-flush planner-desktop' }, grid),
     phone,
+    summaryCard({ monday, data: ctx, notes: summaryDemand.notes, weekLabel }),
   );
 }
 

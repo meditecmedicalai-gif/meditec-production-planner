@@ -158,10 +158,34 @@ src/pages/                         one file per page
   counts of overdue items and items due in the displayed week. Click a note to open it; the panel can be
   collapsed.
 
+## Weekly summary
+Shown below the planner grid (or jump to it with **Summary ↓**), for the week being displayed:
+
+| Column | Meaning |
+|---|---|
+| **Planned** | Quantity targets this week (Mon–Fri) for tasks marked *Counts as output* in Settings (normally Final assembly). Tick **Count all pump tasks** to include every pump task instead. |
+| **Demand due** | Open + planned demand notes for that model and build type due by Friday of that week, **including overdue**. |
+| **Gap** | Planned − Demand due. Red = short, green = covered. |
+| **Later / no date** | Open + planned demand due after that week or with no date (for information; not in the gap). |
+
+Rows are per pump model and build type, with an *All types* subtotal per model. Filter to one build type
+(or *Not specified*) with the drop-down. General notes without a pump model are not counted.
+
+## Printing
+**Print** on the planner prints the displayed week on **A4 landscape**: page 1 is the plan (who does what
+each day, absences, build-type colours, working hours, printed date and name), page 2 is the weekly
+summary. Navigation, buttons and the demand panel are left out. In the print dialog, keep
+"Background graphics" ticked for the colours. Printing from a phone also gives the full week grid.
+
+## History (admin)
+**History** lists every change to planner jobs, absences, demand notes and build types: when, who, what
+was added / deleted, and for changes the old → new value of each field. Filter by area or by team member.
+Entries come from database triggers and cannot be edited or deleted through the app.
+
 ## Change history (audit log)
 Every insert, update and delete on **assignments**, **absences**, **demand notes** and **build types** is recorded
 automatically in `audit_log` (who, when, old and new values) by database triggers. Only admins can
-read it, and nobody can edit it through the app or API. A History page arrives in Phase 5.
+read it (on the **History** page), and nobody can edit it through the app or API.
 This is a planning aid, not a controlled QMS record.
 
 ## Build phases
@@ -169,4 +193,4 @@ This is a planning aid, not a controlled QMS record.
 2. ✅ People & skills matrix, Settings (pump models, tasks, working hours)
 3. ✅ Weekly planner, absences and build types
 4. ✅ Demand & notes (with build-type filter) and open-demand panel on the planner
-5. Weekly summary by pump model and build type, History view, print view
+5. ✅ Weekly summary by pump model and build type, History page, A4 print view
