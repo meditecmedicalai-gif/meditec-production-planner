@@ -4,8 +4,8 @@ import { auth, loadSession, loadProfile, signOut } from './auth.js';
 import { h, mount, hhmm } from './ui.js';
 import { renderLogin } from './pages/login.js';
 import { renderPlanner } from './pages/planner.js';
+import { renderDemand } from './pages/demand.js';
 import { renderAccount } from './pages/account.js';
-import { renderComingSoon } from './pages/coming-soon.js';
 import { renderPeople } from './pages/people.js';
 import { renderSettings } from './pages/settings.js';
 
@@ -15,7 +15,7 @@ const app = document.getElementById('app');
 // enforces the real permissions in the database).
 const routes = {
   '/planner':  { label: 'Planner',        render: renderPlanner },
-  '/demand':   { label: 'Demand & Notes', render: renderComingSoon('Demand & Notes', 4) },
+  '/demand':   { label: 'Demand & Notes', render: renderDemand },
   '/people':   { label: 'People',         render: renderPeople },
   '/settings': { label: 'Settings',       render: renderSettings, admin: true },
   '/account':  { label: 'My account',     render: renderAccount, hidden: true },
