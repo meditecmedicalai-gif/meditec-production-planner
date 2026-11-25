@@ -15,7 +15,16 @@ import { loadDemand } from './demand.js';
 // Linked   = of that demand, the quantity already planned in jobs linked to
 //            the notes ("Covers demand" / "Plan this"), in any week.
 // To plan  = Demand − Linked, per note (never below 0) — what still needs planning.
+// Done     = units completed at the LAST stage of the notes due ("Units done" on
+//            linked jobs + "+ Log completed").
+// Still to do = Demand − Done, per note.
 // Later    = still to plan on notes due after that Friday or with no date.
+// Stages   = per model, planned / done at each production stage for the notes due.
+//
+// "Planned (output task)" counts jobs of tasks marked "Counts as output" this
+// week, linked or not — it is the week's build volume. The demand columns use
+// each pump model's stages (the last stage), falling back to "Counts as output"
+// for models without stages and for Any / mixed notes.
 
 const KEY = 'summaryPrefs';
 let prefs = (() => {
@@ -28,13 +37,17 @@ export const ANY_ID = 'any'; // "Any / mixed pump" row
 
 /** Notes for the summary: not done, with their linked planned quantity. */
 export const summaryNotes = (demand) => (demand?.items || []).filter((x) => x.state.status !== 'done')
-  .map((x) => ({ ...x.note, linked: x.state.planned, remaining: x.state.remaining }));
+  .map((x) => ({ ...x.note, linked: x.state.planned, remaining: x.state.remaining, completed: x.state.completed, toDo: x.state.toDo,
+    stages: (x.state.stages || []).map((st) => ({ taskId: st.taskId, name: st.name, planned: st.planned, done: st.done })) }));
 
 /** Loads the open demand (with linked jobs) for the summary. */
 export async function loadSummaryDemand() {
   const demand = await loadDemand();
   return { notes: summaryNotes(demand), demand, error: demand.error };
 }
+
+const FIELDS = ['planned', 'demand', 'linked', 'toPlan', 'later', 'done', 'toDo'];
+const sumLines = (lines) => Object.fromEntries(FIELDS.map((f) => [f, lines.reduce((t, l) => t + (l[f] || 0), 0)]));
 
 /** Pure calculation — returns rows grouped by model. Exported for testing. */
 export function computeSummary({ monday, assignments, notes, tasks, models, types, allTasks, typeFilter }) {
@@ -44,7 +57,7 @@ export function computeSummary({ monday, assignments, notes, tasks, models, type
   const counts = new Map(); // key model|type -> { planned, demand, later }
   const cell = (modelId, typeId) => {
     const k = `${modelId}|${typeId || NONE}`;
-    if (!counts.has(k)) counts.set(k, { planned: 0, demand: 0, linked: 0, toPlan: 0, later: 0 });
+    if (!counts.has(k)) counts.set(k, { planned: 0, demand: 0, linked: 0, toPlan: 0, later: 0, done: 0, toDo: 0 });
     return counts.get(k);
   };
   const typeOk = (typeId) => !typeFilter || (typeFilter === NONE ? !typeId : typeId === typeFilter);
@@ -59,6 +72,7 @@ export function computeSummary({ monday, assignments, notes, tasks, models, type
     cell(modelKey, a.build_type_id).planned += a.qty_target || 0;
   }
   let generalNotes = 0;
+  const stagesByModel = new Map(); // model → Map(stage name → { name, planned, done, needed })
   for (const n of notes) {
     const noteKey = n.any_pump ? ANY_ID : n.pump_model_id;
     if (!noteKey) { generalNotes++; continue; }
@@ -67,7 +81,18 @@ export function computeSummary({ monday, assignments, notes, tasks, models, type
     const need = n.quantity || 0;
     const linked = Math.min(n.linked || 0, need);
     const rest = n.remaining != null ? n.remaining : Math.max(0, need - linked);
-    if (n.needed_by && n.needed_by <= friday) { c.demand += need; c.linked += linked; c.toPlan += rest; } else c.later += rest;
+    if (n.needed_by && n.needed_by <= friday) {
+      c.demand += need; c.linked += linked; c.toPlan += rest;
+      c.done += Math.min(n.completed || 0, need);
+      c.toDo += n.toDo != null ? n.toDo : Math.max(0, need - (n.completed || 0));
+      if (!stagesByModel.has(noteKey)) stagesByModel.set(noteKey, new Map());
+      const sm = stagesByModel.get(noteKey);
+      for (const st of n.stages || []) {
+        if (!sm.has(st.name)) sm.set(st.name, { name: st.name, planned: 0, done: 0, needed: 0 });
+        const x = sm.get(st.name);
+        x.planned += Math.min(st.planned || 0, need); x.done += Math.min(st.done || 0, need); x.needed += need;
+      }
+    } else c.later += rest;
   }
 
   const typeOrder = new Map(types.map((t, i) => [t.id, i]));
@@ -77,17 +102,16 @@ export function computeSummary({ monday, assignments, notes, tasks, models, type
     const lines = [...counts.entries()]
       .filter(([k]) => k.startsWith(`${m.id}|`))
       .map(([k, v]) => ({ typeId: k.split('|')[1], ...v }))
-      .filter((l) => l.planned || l.demand || l.later || l.linked)
+      .filter((l) => l.planned || l.demand || l.later || l.linked || l.done)
       .sort((a, b) => (typeOrder.get(a.typeId) ?? 999) - (typeOrder.get(b.typeId) ?? 999));
     if (!lines.length) continue;
-    const total = lines.reduce((t, l) => ({ planned: t.planned + l.planned, demand: t.demand + l.demand, linked: t.linked + l.linked, toPlan: t.toPlan + l.toPlan, later: t.later + l.later }),
-      { planned: 0, demand: 0, linked: 0, toPlan: 0, later: 0 });
-    groups.push({ model: m, lines, total });
+    const total = sumLines(lines);
+    // a stage row only adds something when there is more than one stage
+    const stageList = [...(stagesByModel.get(m.id)?.values() || [])];
+    const stages = stageList.length > 1 ? stageList : [];
+    groups.push({ model: m, lines, total, stages });
   }
-  const grand = groups.reduce((t, g) => ({
-    planned: t.planned + g.total.planned, demand: t.demand + g.total.demand, linked: t.linked + g.total.linked,
-    toPlan: t.toPlan + g.total.toPlan, later: t.later + g.total.later,
-  }), { planned: 0, demand: 0, linked: 0, toPlan: 0, later: 0 });
+  const grand = sumLines(groups.map((g) => g.total));
   return { groups, grand, generalNotes, friday };
 }
 
@@ -119,6 +143,10 @@ export function summaryCard({ monday, data, notes, weekLabel }) {
       return t ? h('span', { class: 'type-tag', style: `--type-color:${t.color}` }, t.name) : h('span', { class: 'muted small' }, 'Not specified');
     };
     const num = (v) => h('td', { class: 'num' }, v ? String(v) : '–');
+    const todo = (l) => {
+      if (!l.demand) return h('td', { class: 'num muted' }, '–');
+      return h('td', { class: `num ${l.toDo > 0 ? '' : 'gap-ok'}` }, l.toDo > 0 ? String(l.toDo) : '✓ 0');
+    };
     const gap = (l) => {
       if (!l.demand) return h('td', { class: 'num muted' }, '–');
       return h('td', { class: `num gap ${l.toPlan > 0 ? 'gap-short' : 'gap-ok'}` }, l.toPlan > 0 ? String(l.toPlan) : '✓ 0');
@@ -126,14 +154,21 @@ export function summaryCard({ monday, data, notes, weekLabel }) {
 
     const body = r.groups.flatMap((g) => {
       const rows = g.lines.map((l, i) => h('tr', { class: i === 0 ? 'group-start' : '' },
-        i === 0 ? h('th', { scope: 'rowgroup', rowspan: g.lines.length + (g.lines.length > 1 ? 1 : 0), class: 'model-cell' }, g.model.name) : null,
+        i === 0 ? h('th', { scope: 'rowgroup', rowspan: g.lines.length + (g.lines.length > 1 ? 1 : 0) + (g.stages.length ? 1 : 0), class: 'model-cell' }, g.model.name) : null,
         h('td', {}, typeCell(l.typeId)),
-        num(l.planned), num(l.demand), num(l.linked), gap(l), num(l.later),
+        num(l.planned), num(l.demand), num(l.linked), gap(l), num(l.done), todo(l), num(l.later),
       ));
       if (g.lines.length > 1) {
         rows.push(h('tr', { class: 'subtotal' },
           h('td', { class: 'muted small' }, 'All types'),
-          num(g.total.planned), num(g.total.demand), num(g.total.linked), gap(g.total), num(g.total.later)));
+          num(g.total.planned), num(g.total.demand), num(g.total.linked), gap(g.total), num(g.total.done), todo(g.total), num(g.total.later)));
+      }
+      if (g.stages.length) {
+        rows.push(h('tr', { class: 'stage-row' },
+          h('td', { colspan: 8, class: 'small' },
+            h('span', { class: 'muted' }, 'Stages (demand due): '),
+            g.stages.map((st, i) => h('span', { class: 'sum-stage' }, i ? ' → ' : '',
+              h('b', {}, st.name), ` ${st.planned}/${st.needed} planned · `, h('span', { class: 'st-done' }, `${st.done} done`))))));
       }
       return rows;
     });
@@ -145,7 +180,7 @@ export function summaryCard({ monday, data, notes, weekLabel }) {
         h('div', { class: 'summary-controls no-print' }, typeSel, allToggle),
       ),
       h('p', { class: 'muted small' },
-        `Planned units this week, and demand due by ${fmtDayShort(addDays(monday, 4))} (including overdue) with how much of it is already planned in linked jobs.`,
+        `Planned units this week, and demand due by ${fmtDayShort(addDays(monday, 4))} (including overdue) with how much of it is planned and done (at each pump model's last stage).`,
         prefs.type ? ` Filtered to ${prefs.type === NONE ? 'Not specified' : data.typeById.get(prefs.type)?.name} build type.` : ''),
       r.groups.length
         ? h('div', { class: 'table-scroll summary-scroll' },
@@ -157,12 +192,14 @@ export function summaryCard({ monday, data, notes, weekLabel }) {
                 h('th', { scope: 'col', class: 'num' }, 'Demand due'),
                 h('th', { scope: 'col', class: 'num', title: 'Quantity planned in jobs linked to these notes (any week)' }, 'Planned for it'),
                 h('th', { scope: 'col', class: 'num', title: 'Demand due − planned for it' }, 'Still to plan'),
+                h('th', { scope: 'col', class: 'num', title: 'Units completed at the last stage (units done on jobs + logged)' }, 'Done'),
+                h('th', { scope: 'col', class: 'num', title: 'Demand due − done' }, 'Still to do'),
                 h('th', { scope: 'col', class: 'num', title: 'Still to plan on notes due after this week or with no date' }, 'Later / no date'),
               )),
               h('tbody', {}, body),
               h('tfoot', {}, h('tr', {},
                 h('th', { scope: 'row', colspan: 2 }, 'Total'),
-                num(r.grand.planned), num(r.grand.demand), num(r.grand.linked), gap(r.grand), num(r.grand.later),
+                num(r.grand.planned), num(r.grand.demand), num(r.grand.linked), gap(r.grand), num(r.grand.done), todo(r.grand), num(r.grand.later),
               )),
             ))
         : h('p', { class: 'empty' }, 'Nothing planned and no open demand for pump models this week.'),

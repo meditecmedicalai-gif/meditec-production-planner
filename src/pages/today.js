@@ -9,6 +9,7 @@ import { toISO, fromISO, addDays, mondayOf, today, isoWeek, fmtDayLong, fmtDaySh
 import { loadWeek, makeCtx, ABSENCE_TYPES } from './planner.js';
 import { computeSummary, loadSummaryDemand } from './summary.js';
 import { noteCard } from './demand.js';
+import { loadTodos, myTodosCard } from './todos.js';
 import { coversDay, endDateOf, intervalOf, timeLabel, hm } from '../jobs.js';
 import { capacityForDay, capacityAt, level, occupancyText } from '../capacity.js';
 import { occupancySvg } from './occupancy.js';
@@ -120,13 +121,14 @@ export async function renderToday(main) {
   const sameWeek = toISO(thisMonday) === toISO(monday);
   const trendFrom = toISO(addDays(monday, -49));
 
-  const [week, current, demand, profiles, settings, trendRows] = await Promise.all([
+  const [week, current, demand, profiles, settings, trendRows, todos] = await Promise.all([
     loadWeek(monday),
     sameWeek ? null : loadWeek(thisMonday),
     loadSummaryDemand(),
     supabase.from('profiles').select('id, full_name, email'),
     supabase.from('app_settings').select('work_start, work_end, break_time, break_minutes, lunch_time, lunch_minutes').eq('id', 1).maybeSingle(),
     supabase.from('assignments').select('*').gte('work_date', trendFrom).lte('work_date', toISO(friday)),
+    loadTodos(),
   ]);
   const err = week.error || current?.error || demand.error || profiles.error || settings.error || trendRows.error;
   if (reportError(err, 'Loading Today')) return;
@@ -225,7 +227,9 @@ export async function renderToday(main) {
     !needed ? 'Nothing due by Friday.'
       : toPlan > 0 ? [num(needed), ' needed by Friday — ', num(toPlan, 'short'), ' still to plan', worst?.total.toPlan > 0 ? [' (mostly ', h('b', {}, worst.model.name), ')'] : '', '.']
         : [num(needed), ' needed by Friday — ', h('span', { class: 'num ok' }, 'all planned'), ' ✓']);
+  const doneDue = summary.grand.done; const toDoDue = summary.grand.toDo;
   const facts = h('div', { class: 'facts' },
+    needed ? h('span', { class: 'fact-progress' }, h('b', { class: 'ok' }, String(doneDue)), ' completed · ', h('b', {}, String(toDoDue)), ' still to do by Friday') : null,
     overdue.length ? h('span', {}, h('b', { class: 'late' }, String(overdue.length)), ` demand note${overdue.length === 1 ? '' : 's'} overdue`) : null,
     absentPeople.slice(0, 2).map((a) => h('span', {}, h('b', {}, (personById.get(a.person_id)?.name || 'Someone').split(' ')[0]),
       ` ${(ABSENCE_TYPES[a.absence_type] || 'absent').toLowerCase() === 'holiday' ? 'is on holiday' : `is ${ABSENCE_TYPES[a.absence_type]?.toLowerCase() || 'away'}`}`,
@@ -357,7 +361,8 @@ export async function renderToday(main) {
       shift,
       stats,
       h('div', { class: 'dash-row r-2c' }, rightNow.whoCard, rightNow.laterCard),
-      h('div', { class: 'dash-row r-2' }, glance, feedCard),
+      h('div', { class: 'dash-row r-2d' }, feedCard, myTodosCard(todos, () => renderToday(currentMain))),
+      glance,
       h('div', { class: 'dash-row r-3' }, mixCard, trendCard, workCard),
       h('div', { class: 'dash-row r-2b' }, timeline.card, h('div', { class: 'dash' }, testCard, equipCard)),
     ),
@@ -626,12 +631,15 @@ function whoIsFree({ now, todayISO, weekend }) {
         label = day.nonWorking ? 'Not working' : x.text.startsWith('Not started') ? 'Not started yet' : 'Finished';
         detail = day.nonWorking ? 'Not a working day' : x.text.startsWith('Not started') ? `starts ${fmtClock(day.ws)}` : `Finished for the day (${fmtClock(day.we)})`;
       } else if (x.kind === 'break') { label = x.label === 'Lunch' ? 'On lunch' : 'On break'; detail = `until ${fmtClock(x.until)}`; }
-      else if (x.kind === 'busy') { label = 'Busy'; detail = [jobText(now, x.job), `until ${fmtClock(x.until)}`, x.more ? `+${x.more} more` : null].filter(Boolean).join(' · '); }
+      else if (x.kind === 'busy' && now.taskById.get(x.job.task_id)?.category === 'office') {
+        // "Office — Meetings until 11:30"
+        label = 'Office'; detail = `${jobText(now, x.job).replace(/^Office — /, '')} until ${fmtClock(x.until)}${x.more ? ` · +${x.more} more` : ''}`;
+      } else if (x.kind === 'busy') { label = 'Busy'; detail = [jobText(now, x.job), `until ${fmtClock(x.until)}`, x.more ? `+${x.more} more` : null].filter(Boolean).join(' · '); }
       else { label = 'Free'; detail = `until ${fmtClock(x.until)}`; }
       return h('li', { class: `who who-${x.kind}`, 'data-person': p.id },
         avatar(p.name, p.id, 'av-sm'),
         h('span', { class: 'who-name' }, p.name),
-        h('span', { class: `who-pill pill-${x.kind}` }, label),
+        h('span', { class: `who-pill pill-${label === 'Office' ? 'office' : x.kind}` }, label),
         h('span', { class: 'who-detail' }, detail));
     }));
     const later = days.filter((x) => !x.day.absent && !x.day.nonWorking).map((x) => ({ ...x, slot: nextFree(x.day, m) }))

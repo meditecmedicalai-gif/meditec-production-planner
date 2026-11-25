@@ -17,6 +17,7 @@ export async function renderSettings(main, ctx) {
   );
   const { data: areas } = await supabase.from('test_areas').select('id, name, active').order('sort_order').order('name');
   areaList = areas || [];
+  await loadStageCtx();
   await Promise.all([
     renderTestAreas(testCard, () => renderSettings(main, ctx)),
     renderPatterns(hoursCard, ctx),
@@ -132,6 +133,10 @@ const MODELS = {
     { key: 'test_area_id', label: 'Default test area', type: 'select', hint: 'Where this model is tested (for test capacity).', options: () => areaList,
       show: (v) => (v ? `🧪 ${areaList.find((a) => a.id === v)?.name || 'test area'}` : null) },
   ],
+  // production stages (migration 012)
+  extraActions: (row, reload) => (stageCtx.ready ? h('button', { class: 'btn btn-sm', title: `Production stages for ${row.name}`, onclick: () => editStages(row, reload) },
+    `Stages${stageCtx.count(row.id) ? ` (${stageCtx.count(row.id)})` : ''}`) : null),
+  extraBadge: (row) => (stageCtx.ready && stageCtx.count(row.id) ? h('span', { class: 'tag', title: 'Production stages — the last one counts as complete for demand' }, stageCtx.summary(row.id)) : null),
 };
 
 const BUILD_TYPES = {
@@ -151,8 +156,8 @@ const TASKS = {
   table: 'tasks',
   title: 'Tasks / operations',
   singular: 'task',
-  help: '"Counts as output" tasks are added up as units produced in the weekly summary (normally Final assembly only).',
-  columns: 'id, name, requires_pump, counts_as_output, is_background, is_testing, allows_any_pump, active, sort_order',
+  help: '"Counts as output" tasks are added up as units produced in the weekly summary (normally Final assembly only), and are the stage used for demand when a pump model has no stages. Office tasks (💻) are for non-production work: no pump, not in pump summaries or test capacity.',
+  columns: '*', // includes "category" (migration 012)
   flags: [
     { key: 'requires_pump', label: 'Requires a pump model', badge: 'needs pump' },
     { key: 'counts_as_output', label: 'Counts as output (units produced)', badge: 'counts as output', accent: true },
@@ -160,7 +165,10 @@ const TASKS = {
     { key: 'is_testing', label: 'Testing task — counts towards test capacity (quantity = pumps on test)', badge: '🧪 testing' },
     { key: 'allows_any_pump', label: 'Allows “Any / mixed pump” (e.g. rental repairs)', badge: 'any pump' },
   ],
-  extraFields: [],
+  extraFields: [
+    { key: 'category', label: 'Category', type: 'select', options: () => [{ id: 'production', name: 'Production', active: true }, { id: 'office', name: 'Office / non-production', active: true }],
+      noBlank: true, default: 'production', show: (v) => (v === 'office' ? '💻 office' : null), onlyIf: (rows) => rows.some((x) => 'category' in x) },
+  ],
 };
 
 const EQUIPMENT = {
@@ -183,6 +191,7 @@ const EQUIPMENT = {
 async function renderRefList(card, cfg) {
   const { data: rows, error } = await supabase.from(cfg.table).select(cfg.columns).order('sort_order').order('name');
   if (reportError(error, `Loading ${cfg.title.toLowerCase()}`)) return;
+  cfg._rows = rows;
   const reload = () => renderRefList(card, cfg);
 
   const move = async (index, dir) => {
@@ -242,6 +251,7 @@ async function renderRefList(card, cfg) {
           return text ? h('span', { class: 'tag' }, text) : null;
         }),
         row.is_default ? h('span', { class: 'tag tag-accent' }, 'default') : null,
+        cfg.extraBadge ? cfg.extraBadge(row) : null,
         cfg.flags.map((fl) => (row[fl.key] ? h('span', { class: `tag ${fl.accent ? 'tag-accent' : ''}` }, fl.badge) : null)),
         row.active ? null : h('span', { class: 'tag tag-muted' }, 'inactive'),
       ),
@@ -250,6 +260,7 @@ async function renderRefList(card, cfg) {
         h('button', { class: 'btn btn-sm btn-ghost', title: 'Move down', 'aria-label': `Move ${row.name} down`, disabled: i === rows.length - 1, onclick: () => move(i, 1) }, '↓'),
         cfg.hasDefault && !row.is_default && row.active
           ? h('button', { class: 'btn btn-sm', onclick: () => makeDefault(row) }, 'Make default') : null,
+        cfg.extraActions ? cfg.extraActions(row, reload) : null,
         h('button', { class: 'btn btn-sm', onclick: () => editRef(cfg, row, reload) }, 'Edit'),
         row.is_default ? null : h('button', { class: 'btn btn-sm', onclick: () => toggleActive(row) }, row.active ? 'Deactivate' : 'Reactivate'),
         row.is_default ? null : h('button', { class: 'btn btn-sm btn-danger', onclick: () => remove(row) }, 'Delete'),
@@ -272,15 +283,15 @@ async function renderRefList(card, cfg) {
 
 function editRef(cfg, row, onSaved, nextSortOrder) {
   const name = h('input', { type: 'text', value: row?.name ?? '', required: true, maxlength: 80 });
-  const extras = cfg.extraFields.map((x) => ({
+  const extras = cfg.extraFields.filter((x) => !x.onlyIf || x.onlyIf(cfg._rows || [])).map((x) => ({
     key: x.key,
     input: x.type === 'color'
       ? h('input', { type: 'color', value: row?.[x.key] ?? x.default, class: 'color-input' })
       : x.type === 'select'
         ? (() => {
-            const sel = h('select', {}, h('option', { value: '' }, '— none —'),
+            const sel = h('select', {}, x.noBlank ? null : h('option', { value: '' }, '— none —'),
               x.options().filter((o) => o.active !== false || o.id === row?.[x.key]).map((o) => h('option', { value: o.id }, o.name)));
-            sel.value = row?.[x.key] ?? '';
+            sel.value = row?.[x.key] ?? x.default ?? '';
             return sel;
           })()
         : h('input', { type: 'text', value: row?.[x.key] ?? '', maxlength: x.maxlength }),
@@ -307,6 +318,7 @@ function editRef(cfg, row, onSaved, nextSortOrder) {
           if (!values.name) { error.textContent = 'Please enter a name.'; return false; }
           for (const x of extras) values[x.key] = x.input.value.trim() || null;
           for (const fl of flags) values[fl.key] = fl.input.checked;
+          if (values.category === 'office') Object.assign(values, { requires_pump: false, counts_as_output: false, is_testing: false });
           const q = row
             ? supabase.from(cfg.table).update(values).eq('id', row.id)
             : supabase.from(cfg.table).insert({ ...values, sort_order: nextSortOrder });
@@ -477,4 +489,72 @@ async function renderTestAreas(card, reloadAll) {
     h('p', { class: 'muted small' }, 'Pumps are tested several at a time. A job counts towards a test area when it is booked on a station linked to that area (any task with a pump quantity); without a station, a testing task counts towards the pump model’s default area. The planner adds up overlapping jobs — including overnight and background jobs — and warns when an area or a limit group is exceeded, or when a pump is booked on another area’s station. Each area is separate: its maximum is absolute for that area.'),
     areas.data.length ? h('div', { class: 'stack' }, areas.data.map(areaBlock)) : h('p', { class: 'empty' }, 'No test areas yet.'),
   );
+}
+
+// ----------------------------------------------------- production stages per pump model (migration 012)
+const stageCtx = { ready: false, rows: [], tasks: [], count: () => 0, summary: () => '' };
+async function loadStageCtx() {
+  const [st, tasks] = await Promise.all([
+    supabase.from('pump_model_stages').select('*').order('position'),
+    supabase.from('tasks').select('*').order('sort_order'),
+  ]);
+  stageCtx.ready = !st.error;
+  stageCtx.rows = st.data || [];
+  stageCtx.tasks = tasks.data || [];
+  const name = (id) => stageCtx.tasks.find((t) => t.id === id)?.name || '?';
+  const mine = (modelId) => stageCtx.rows.filter((r) => r.pump_model_id === modelId).sort((a, b) => a.position - b.position);
+  stageCtx.count = (modelId) => mine(modelId).length;
+  stageCtx.summary = (modelId) => mine(modelId).map((r) => name(r.task_id)).join(' → ');
+  stageCtx.ids = (modelId) => mine(modelId).map((r) => r.task_id);
+}
+
+/** Default stages by rule: Sub-assembly → Final assembly → Functional test / calibration → Quality testing. */
+function defaultStages() {
+  const prod = stageCtx.tasks.filter((t) => t.active && (t.category || 'production') === 'production');
+  return [/sub.*assembl/i, /final.*assembl/i, /calibrat/i, /quality/i]
+    .map((re) => prod.find((t) => re.test(t.name))?.id).filter(Boolean);
+}
+
+function editStages(model, reload) {
+  let list = stageCtx.ids(model.id);
+  const box = h('ol', { class: 'stage-list' });
+  const add = h('select', { 'aria-label': 'Add a stage' });
+  const error = h('p', { class: 'form-error', role: 'alert' });
+  const name = (id) => stageCtx.tasks.find((t) => t.id === id)?.name || '?';
+  const draw = () => {
+    mount(box, list.length ? list.map((id, i) => h('li', {},
+      h('span', { class: 'stage-name' }, name(id), i === list.length - 1 ? h('span', { class: 'tag tag-accent' }, 'last — counts as complete') : null),
+      h('span', { class: 'ref-actions' },
+        h('button', { type: 'button', class: 'btn btn-xs btn-ghost', 'aria-label': `Move ${name(id)} up`, disabled: i === 0, onclick: () => { [list[i - 1], list[i]] = [list[i], list[i - 1]]; draw(); } }, '↑'),
+        h('button', { type: 'button', class: 'btn btn-xs btn-ghost', 'aria-label': `Move ${name(id)} down`, disabled: i === list.length - 1, onclick: () => { [list[i + 1], list[i]] = [list[i], list[i + 1]]; draw(); } }, '↓'),
+        h('button', { type: 'button', class: 'btn btn-xs btn-ghost', 'aria-label': `Remove ${name(id)}`, onclick: () => { list = list.filter((x) => x !== id); draw(); } }, '✕'))))
+      : h('li', { class: 'muted small' }, 'No stages — demand uses the "Counts as output" task(s) instead.'));
+    const avail = stageCtx.tasks.filter((t) => t.active && (t.category || 'production') === 'production' && !list.includes(t.id));
+    mount(add, h('option', { value: '' }, '+ Add a stage…'), avail.map((t) => h('option', { value: t.id }, t.name)));
+  };
+  add.addEventListener('change', () => { if (add.value) { list.push(add.value); draw(); } });
+  draw();
+  openModal({
+    title: `Production stages · ${model.name}`,
+    body: h('div', { class: 'stack' },
+      h('p', { class: 'muted small' }, 'The order work goes through for this pump. Demand notes show progress per stage; the LAST stage counts as planned / complete for the note.'),
+      box, add,
+      h('button', { type: 'button', class: 'btn btn-sm btn-ghost', onclick: () => { list = defaultStages(); draw(); } }, 'Use the default (Sub-assembly → Final assembly → Calibration → Quality testing)'),
+      error),
+    actions: [{ label: 'Cancel' }, {
+      label: 'Save', variant: 'primary',
+      onClick: async () => {
+        const { error: e1 } = await supabase.from('pump_model_stages').delete().eq('pump_model_id', model.id);
+        if (reportError(e1, 'Saving stages')) return false;
+        if (list.length) {
+          const { error: e2 } = await supabase.from('pump_model_stages').insert(list.map((task_id, i) => ({ pump_model_id: model.id, task_id, position: i + 1 })));
+          if (reportError(e2, 'Saving stages')) return false;
+        }
+        toast(`Stages for ${model.name} saved.`, 'success');
+        await loadStageCtx();
+        reload();
+        return true;
+      },
+    }],
+  });
 }

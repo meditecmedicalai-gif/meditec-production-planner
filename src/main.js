@@ -213,7 +213,8 @@ const LABEL = { assignments: 'the plan', absences: 'absences', demand_notes: 'de
   pump_models: 'pump models', tasks: 'tasks', build_types: 'build types', equipment: 'equipment', app_settings: 'settings',
   test_areas: 'test areas', test_area_shared_tasks: 'test areas', test_limits: 'test limits', test_limit_models: 'test limits',
   recurring_jobs: 'recurring jobs', recurring_exceptions: 'recurring jobs',
-  work_patterns: 'working hours', work_pattern_days: 'working hours', person_work_patterns: 'working hours', person_day_hours: 'working hours' };
+  work_patterns: 'working hours', work_pattern_days: 'working hours', person_work_patterns: 'working hours', person_day_hours: 'working hours',
+  todos: 'to-dos', pump_model_stages: 'pump model stages', demand_progress: 'completed units', demand_stage_plans: 'planned quantities' };
 
 function onLiveChange(payload) {
   const row = payload.new && Object.keys(payload.new).length ? payload.new : null;

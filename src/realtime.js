@@ -5,7 +5,8 @@ import { supabase } from './supabase.js';
 export const LIVE_TABLES = ['assignments', 'absences', 'demand_notes', 'people', 'person_skills',
   'pump_models', 'tasks', 'build_types', 'equipment', 'app_settings', 'test_areas', 'test_area_shared_tasks',
   'test_limits', 'test_limit_models', 'recurring_jobs', 'recurring_exceptions',
-  'work_patterns', 'work_pattern_days', 'person_work_patterns', 'person_day_hours'];
+  'work_patterns', 'work_pattern_days', 'person_work_patterns', 'person_day_hours',
+  'todos', 'pump_model_stages', 'demand_progress', 'demand_stage_plans'];
 
 let channel = null;
 

@@ -3,6 +3,7 @@ import { supabase } from '../supabase.js';
 import { auth } from '../auth.js';
 import { demandPanel, loadDemand, takePendingPlan, noteText } from './demand.js';
 import { summaryNotes } from './summary.js';
+import { loadTodos } from './todos.js';
 import { loadSummaryDemand, summaryCard } from './summary.js';
 import { isBackground, coversDay, endDateOf, timeLabel, clashes, hm, pumpLabel, ABSENCE_TYPES } from '../jobs.js';
 import { capacityConfig, capacityForDay, level, stationMismatch, occupancyText, equipmentShared } from '../capacity.js';
@@ -73,7 +74,7 @@ export async function loadRange(from, to) {
   const q = {
     people: supabase.from('people').select('*').order('name'),
     models: supabase.from('pump_models').select('id, name, short_code, active, sort_order, test_area_id').order('sort_order').order('name'),
-    tasks: supabase.from('tasks').select('id, name, requires_pump, counts_as_output, is_background, is_testing, allows_any_pump, active, sort_order').order('sort_order').order('name'),
+    tasks: supabase.from('tasks').select('*').order('sort_order').order('name'),
     types: supabase.from('build_types').select('id, name, color, is_default, active, sort_order').order('sort_order').order('name'),
     skills: supabase.from('person_skills').select('person_id, pump_model_id'),
     // Jobs starting this week, plus ones that started earlier and run into it
@@ -84,6 +85,8 @@ export async function loadRange(from, to) {
         .lte('work_date', to).or(`work_date.gte.${dayBefore},end_date.gte.${from}`)
         .order('start_time', { nullsFirst: true }).order('created_at');
       // newest columns first; fall back if a migration hasn't been run yet (011 → 009 → base)
+      const r00 = await run(`${JOB_COLUMNS}, pause_for_breaks, part_of, demand_id, qty_done, todo_id`);
+      if (!r00.error) return r00;
       const r0 = await run(`${JOB_COLUMNS}, pause_for_breaks, part_of, demand_id`);
       if (!r0.error) return r0;
       const r1 = await run(`${JOB_COLUMNS}, pause_for_breaks, part_of`);
@@ -306,7 +309,7 @@ export async function renderPlanner(main) {
     const { error } = await supabase.rpc('extend_recurring_jobs');
     if (!error) extendedOn = todayISO;
   }
-  const [data, demand] = await Promise.all([loadWeek(monday), loadDemand()]);
+  const [data, demand, todos] = await Promise.all([loadWeek(monday), loadDemand(), loadTodos()]);
   if (reportError(data.error || demand.error, 'Loading the planner')) return;
   const panel = demandPanel(demand, () => renderPlanner(main));
   const summaryDemand = { notes: summaryNotes(demand) };
@@ -315,6 +318,7 @@ export async function renderPlanner(main) {
   const dayIdx = isoDays.indexOf(viewDay);
   const ctx = makeCtx(data);
   ctx.demand = demand; // for "Covers demand" in the job form
+  ctx.todos = todos;   // for "For to-do" on office jobs
   const reload = () => renderPlanner(main);
 
   // Rows: active people, plus inactive people who still have work/absence this week.
@@ -419,10 +423,12 @@ export async function renderPlanner(main) {
     const notes = ctx.breakNotes(a, person.name, iso);
     const part = ctx.partInfo(a);
     const cover = a.demand_id ? demand.items.find((i) => i.note.id === a.demand_id) : null;
+    const office = task?.category === 'office';
+    const forTodo = a.todo_id && todos.ready ? todos.items.find((x) => x.todo.id === a.todo_id) : null;
     const label = [pump, type?.name, task?.name, a.qty_target != null ? a.qty_target : null].filter((x) => x != null).join(' · ');
     return h('button', {
       type: 'button',
-      class: `chip ${bg ? 'chip-bg' : 'chip-att'} ${continuing ? 'chip-cont' : ''} ${warnings.length ? 'chip-warn' : ''} ${notes.length ? 'chip-note' : ''} ${a.any_pump ? 'chip-any' : ''}`,
+      class: `chip ${bg ? 'chip-bg' : 'chip-att'} ${office ? 'chip-office' : ''} ${continuing ? 'chip-cont' : ''} ${warnings.length ? 'chip-warn' : ''} ${notes.length ? 'chip-note' : ''} ${a.any_pump ? 'chip-any' : ''}`,
       style: type ? `--type-color:${type.color}` : false,
       title: [label, bg ? 'Runs in the background (unattended)' : 'Attended — the person works on this', time,
         equip ? `Equipment: ${ctx.equipmentLabel(equip.id)}` : null, a.recurring_id ? 'Recurring job' : null, a.notes,
@@ -435,12 +441,14 @@ export async function renderPlanner(main) {
         warnings.length ? h('span', { class: 'chip-warn-icon', 'aria-label': 'Warning' }, '!') : null,
         notes.length ? h('span', { class: 'chip-note-icon', 'aria-label': 'Runs across a break', title: notes.join(' ') }, '⏰') : null,
         a.recurring_id ? h('span', { class: 'chip-repeat', 'aria-label': 'Recurring job', title: 'Recurring job' }, '🔁') : null,
+        office ? h('span', { class: 'chip-office-ico', 'aria-label': 'Office work' }, '💻') : null,
         pump ? h('span', { class: 'chip-model' }, pump) : null,
         type ? typeTag(type) : null,
         h('span', { class: 'chip-task' }, task?.name ?? '?'),
-        a.qty_target != null && !continuing && !(part && part.n > 1) ? h('span', { class: 'chip-qty' }, `× ${a.qty_target}`) : null,
+        a.qty_target != null && !continuing && !(part && part.n > 1) ? h('span', { class: 'chip-qty' }, `× ${a.qty_target}`, a.qty_done != null ? h('span', { class: 'chip-done' }, ` · ${a.qty_done} done`) : null) : null,
       ),
-      equip || part || cover ? h('span', { class: 'chip-meta' }, part ? h('span', { class: 'part-tag', title: `Continued job: part ${part.n} of ${part.total}` }, `↪ part ${part.n} of ${part.total}`) : null,
+      equip || part || cover || forTodo ? h('span', { class: 'chip-meta' }, part ? h('span', { class: 'part-tag', title: `Continued job: part ${part.n} of ${part.total}` }, `↪ part ${part.n} of ${part.total}`) : null,
+        forTodo ? h('span', { class: 'demand-tag todo-tag', title: `For to-do: ${forTodo.todo.title}` }, '☑ to-do') : null,
         cover ? h('span', { class: 'demand-tag', title: `Covers demand: ${noteText(cover.note, demand)}${cover.note.needed_by ? ` by ${fmtDayShort(fromISO(cover.note.needed_by))}` : ''} · ${cover.state.planned}${cover.state.needed != null ? ` / ${cover.state.needed}` : ''} planned` }, '📋 demand') : null,
         equip ? h('span', { class: 'equip-tag' }, equip.name) : null) : null,
       a.notes && !continuing && !(part && part.n > 1) ? h('span', { class: 'chip-notes' }, a.notes) : null,
@@ -589,17 +597,28 @@ export async function renderPlanner(main) {
   const openPendingPlan = () => {
     const plan = takePendingPlan();
     if (!plan || !admin) return;
+    if (plan.todoId) {
+      // "Schedule this" on a to-do: an office job for the to-do's owner (their linked person), linked to it
+      if (!isoDays.includes(plan.date)) return;
+      const office = data.tasks.filter((t) => t.active && t.category === 'office');
+      const words = plan.title.toLowerCase();
+      const task = office.find((t) => t.name.toLowerCase().split(/[^a-z]+/).filter((w) => w.length > 3).some((w) => words.includes(w))) || office[0] || null;
+      const owner = rows.find((p) => p.active && p.user_id && p.user_id === plan.ownerId) || null;
+      edit({ person: owner, iso: plan.date, prefill: { task_id: task?.id, notes: plan.title, todo_id: plan.todoId } });
+      return;
+    }
     const x = demand.items.find((i) => i.note.id === plan.noteId);
     if (!x || !isoDays.includes(plan.date)) return;
     const n = x.note;
-    const task = data.tasks.find((t) => t.active && t.counts_as_output) || null;
+    // the first stage that still needs planning (else the "counts as output" task)
+    const task = (plan.taskId && data.taskById.get(plan.taskId)) || data.tasks.find((t) => t.active && t.counts_as_output) || null;
     // suggest the trained person with the most free time that day
     const best = rows.filter((p) => p.active && (n.any_pump || ctx.trained(p.id, n.pump_model_id))
       && ctx.hoursFor(p.id, plan.date).works && !ctx.absenceOn(p.id, plan.date))
       .sort((a, b) => ctx.dayOf(b.id, plan.date).freeMin - ctx.dayOf(a.id, plan.date).freeMin)[0] || null;
     edit({ person: best, iso: plan.date, prefill: {
       task_id: task?.id, pump_model_id: n.pump_model_id, any_pump: n.any_pump, build_type_id: n.build_type_id,
-      qty_target: x.state.remaining ?? n.quantity, demand_id: n.id,
+      qty_target: plan.qty ?? x.state.remaining ?? n.quantity, demand_id: n.id,
     } });
   };
 
