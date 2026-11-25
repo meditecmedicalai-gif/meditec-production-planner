@@ -52,7 +52,13 @@ Live site (once deployed): `https://meditecmedicalai-gif.github.io/meditec-produ
    [`012_office_todos_stages.sql`](supabase/migrations/012_office_todos_stages.sql) (office / non-production tasks,
    to-dos, production stages per pump model, completed units, manual planned quantities). Its one-off set-up runs
    only the first time; afterwards run [`supabase/tests/report_012.sql`](supabase/tests/report_012.sql) to see the
-   office tasks, the stages per model and **how many notes went back to automatic** (hand-set *Planned*).
+   office tasks, the stages per model and **how many notes went back to automatic** (hand-set *Planned*). Then
+   [`013_parts_and_corrections.sql`](supabase/migrations/013_parts_and_corrections.sql) (jobs over several days
+   as one job; corrections to completed units). Then run
+   [`supabase/tests/report_013_parts.sql`](supabase/tests/report_013_parts.sql) — it lists jobs with duplicate,
+   overlapping or stray parts left by the old app. Fix the rows marked *clean-up* with
+   [`supabase/tests/cleanup_013_parts.sql`](supabase/tests/cleanup_013_parts.sql) (optional, after checking the
+   report; safe to run again), and open + Save the jobs marked *open + Save*.
 
 ### 3. Lock down sign-in
 1. **Authentication → Sign In / Providers** (called *Providers* in some versions):
@@ -235,7 +241,10 @@ Pumps are tested several at a time, so the planner adds up the pumps on test tha
 - Capacity pills always fit their own day column: they wrap onto two lines rather than spill into the next day, and
   the occupancy graph sits on its own line. `npm run test:layout` checks this at 1280 / 1440 / 1920 px and on a phone,
   in light and dark mode, `npm run test:timing` checks job timing, `npm run test:shared` checks shared stations, `npm run test:demand`
-  checks demand linked to jobs and `npm run test:office` checks office work, to-dos, stages and completed units
+  checks demand linked to jobs, `npm run test:office` checks office work, to-dos, stages and completed units,
+  `npm run test:parts` checks jobs over several days (auto split, edit any part, move, drag, adjust, delete, copy),
+  `npm run test:corrections` checks corrections to completed units, and `npm run test:unit` runs the unit tests
+  for the re-flow logic and corrections (`tests/unit/`, plain Node — no browser needed)
   (all need Playwright:
   `npm i -D playwright && npx playwright install chromium`).
 - **Occupancy graph**: hover (or tab to) a Quality Check pill in the capacity row to see pumps on test across the
@@ -332,15 +341,41 @@ Under *Timing & equipment* in the job form:
   the Day timeline (the break shows inside the job block), the export (Duration = work time) and test capacity
   all use the adjusted times. **Background jobs don't pause** — they run through breaks.
 - **One summary line**, updated as you type: "Irwin · Mon 10:00–12:15 (incl. break) · within hours ✓".
-  - Runs past their finish → **Continue next working day** (split automatically, e.g. 15:30–16:30 today then
-    08:30–09:30 on their next working day, skipping non-working days and absences — saved as parts, shown
-    "↪ part 1 of 2"; the quantity counts once), **Keep as is (overtime)**, or **Shorten to end of day**.
+  - Runs past their finish → what happens is set in **Settings → Planner → "When a job runs past finish time"**:
+    - **Continue next working day** (default): split **automatically, no prompt** — e.g. 15:30–16:30 today then
+      08:30–09:30 on their next working day, skipping weekends, non-working days and absences. A notice says
+      **"Split into 2 parts: Tue 15:30–16:30 → Wed 08:30–09:45. Undo · Edit"**. *Keep on one day (overtime)* in
+      the form opts one job out.
+    - **Ask me**: the form offers *Continue next working day*, *Keep as is (overtime)* or *Shorten to end of day*.
+    - **Allow overtime**: kept on one day past the finish (the form can still continue it next working day).
   - Starts before their start → **Move to 08:30** (keeps the length).
 - **Runs over several days** — tick it to show **Ends on** (with a *Clear* button). Hidden otherwise, so a stray
   key in a date box can't turn a 10:00–11:00 job into "10:00 → 11:00 next day". Attended multi-day jobs only count
   the person's **working hours each day**, not overnight; background ones run continuously. An end time earlier
   than the start (e.g. 16:00 → 08:00) still means overnight. The job appears on every day it covers ("16:00 → 08:00
   next day" on the first day, "cont. from Mon 16:00 · ends 08:00" after). Quantities count once, on the start day.
+
+### Jobs over several days are ONE job
+A job continued over several working days is one job with parts (shown "↪ part 1 of 2"):
+- **Total work time is stored once**, on part 1; each part only has its own times. Quantity, units done and demand
+  counting are once per job.
+- **Opening any part opens the whole job** — *Edit job · over 2 days*, with *Starts on* (part 1's date), the start
+  time, the **total** work time and every part: "Total work time 3h · Part 1 Tue 15:00–16:30 · Part 2 Wed
+  08:30–10:00".
+- **Every change re-flows the whole job from its first start** using the person's hours, re-using the job's parts:
+  existing parts are updated or removed, new ones added only if needed. **Never more than one part per job per
+  day** (the database refuses a second one). Changing the work time edits the job's total — it is never applied
+  again to a single part (this was the cause of duplicate parts piling up).
+- **Moving it moves every part**: change *Starts on* in the form, **drag any part to another day or person**
+  (week view, admin), *Duplicate…* or *Copy last week* — all parts shift together and re-flow from the new start
+  (e.g. onto the next working day if the person is off). A notice offers **Undo · Edit**.
+- Person, task, pump model, build type, station and notes are the same on every part.
+- **Adjust this part only** (in the parts list): new times for one part, which is then **🔒 locked** (kept when the
+  job re-flows). The following parts either **re-flow to keep the total** or are **locked where they are** (the
+  total becomes their sum). Moving the job's date clears the locks.
+- **Delete** asks **This part only** (the others stay; the total shrinks) or **Whole job**. Both have Undo.
+- Old data: see `report_013_parts.sql` / `cleanup_013_parts.sql` above (duplicates on one day, parts pointing at
+  another part, parts left on an old date, possibly more parts than needed, parts that differ from part 1).
 
 ## Excel export
 **Export to Excel** on the planner and on Today (admin and viewer). Choose the dates — this week, last week, the
@@ -410,7 +445,13 @@ the fallback stage for a pump model with no stages, and for *Any / mixed* notes.
   the planner. Hover the number for "20 from jobs · 10 entered manually". A job over several days counts once.
 - **Completed** = **Units done** on linked jobs (in the job form, admin) + **+ Log completed** on the note (admin:
   quantity, date, stage — the last one by default — and a note). The card lists the latest logs ("Tue 25 Nov · +3
-  · Prince"). Logging more than needed asks first.
+  · Prince"; *+ N earlier* shows the rest). Logging more than needed asks first.
+- **Corrections** (admin): each logged entry has **Edit** and **Delete** (asks first); a **negative quantity** is a
+  correction ("−3 · counted twice", shown ↺); **Set the total (adjust)** sets a stage's completed total directly
+  and is recorded as an entry with the difference ("Adjusted from 13 to 9"); the notice after logging, editing or
+  deleting has **Undo**. **Units done** on a job can be lowered or cleared (*Clear*). Completed **can't go below 0**
+  (the form says so; the database refuses it too), and the status (Done / Partly planned …) recalculates at once.
+  Every change is in History with who and old → new.
 
 **Status — automatic**
 | Status | When |
@@ -514,3 +555,4 @@ This is a planning aid, not a controlled QMS record.
 12. ✅ Shared stations: no double-booking warning on Simultaneous test areas or "Can be shared" equipment
 13. ✅ Demand linked to jobs: Plan this, Covers demand, automatic status, planned too late, clearer cards
 14. ✅ Office work, to-dos, production stages, completed units and manual planned quantities
+15. ✅ Jobs over several days as one job (auto split, re-flow, drag-and-drop, adjust a part); completed-unit corrections

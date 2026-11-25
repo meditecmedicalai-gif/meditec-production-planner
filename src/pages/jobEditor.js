@@ -884,6 +884,7 @@ function editAssignmentForm({ ctx, person, iso, assignment, isoDays, personById,
     ),
     actions,
   });
+  if (seriesParts) multiDay.el.hidden = true;   // a job over several days is shown by its parts instead
   const initWork = seriesTotal ?? copyFrom?._total ?? null;
   if (initWork != null) {
     durMode = 'work';

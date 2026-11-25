@@ -1186,3 +1186,4 @@ td.day-cell.drop-ok { outline: 2px dashed var(--brand); outline-offset: -3px; ba
 .dc-logs .log-act { background: none; border: 0; padding: 0 .15rem; font: inherit; font-size: .75rem; color: var(--brand); text-decoration: underline; cursor: pointer; }
 .dc-logs .log-kind { font-size: .7rem; color: var(--muted); }
 .inline-row { display: flex; gap: .4rem; align-items: center; } .inline-row > input { flex: 1; min-width: 0; }
+.seg-radios { display: flex; gap: 1rem; flex-wrap: wrap; }
