@@ -7,7 +7,7 @@
 -- The whole check is ONE statement. At the end it deliberately stops
 -- with an "error" whose message is the report:
 --
---     RLS CHECK FINISHED: 130 passed, 0 failed ...
+--     RLS CHECK FINISHED: 132 passed, 0 failed ...
 --
 -- Raising that error is what undoes every bit of test data, so nothing
 -- is left behind. Every line should start with PASS.
@@ -113,6 +113,10 @@ begin
           and (select capacity_mode from public.test_areas where name = 'Quality Check') = 'simultaneous' then 'PASS' else 'FAIL' end);
   res := res || format('%s  setup   default pattern: a person with no pattern works Monday, not Sunday',
     case when public.person_works(gen_random_uuid(), date '2026-11-23') and not public.person_works(gen_random_uuid(), date '2026-11-29')
+         then 'PASS' else 'FAIL' end);
+  res := res || format('%s  setup   jobs can pause for breaks and continue on the next working day (009 migration run)',
+    case when exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'assignments' and column_name = 'pause_for_breaks')
+          and exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'assignments' and column_name = 'part_of')
          then 'PASS' else 'FAIL' end);
   res := res || format('%s  setup   people can be linked to a login (people.user_id)',
     case when exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'people' and column_name = 'user_id')
@@ -481,6 +485,17 @@ begin
       select count(*) into n from public.audit_log
       where table_name in ('work_patterns', 'work_pattern_days', 'person_work_patterns', 'person_day_hours') and changed_at >= now();
       res := res || format('%s  admin   working-hours changes written to the change log', case when n >= 4 then 'PASS' else 'FAIL' end);
+
+      -- A job continued on the next working day: deleting part 1 removes its parts
+      insert into public.assignments (person_id, work_date, task_id, start_time, end_time)
+      values (pid3, current_date, (select id from public.tasks where name = 'Training'), '13:00', '14:30') returning id into note_id;
+      insert into public.assignments (person_id, work_date, task_id, start_time, end_time, part_of)
+      values (pid3, current_date + 1, (select id from public.tasks where name = 'Training'), '07:00', '08:00', note_id);
+      delete from public.assignments where id = note_id;
+      select count(*) into n from public.assignments where part_of = note_id;
+      res := res || format('%s  admin   job split over two days: deleting part 1 deletes part 2; pause for breaks is on by default',
+        case when n = 0 and (select column_default from information_schema.columns where table_schema = 'public' and table_name = 'assignments' and column_name = 'pause_for_breaks') = 'true'
+             then 'PASS' else 'FAIL' end);
 
       begin
         insert into public.audit_log (table_name, action) values ('x', 'insert');

@@ -128,7 +128,7 @@ export async function renderToday(main) {
       .in('status', ['open', 'planned']).order('created_at', { ascending: false }).limit(6),
     supabase.from('profiles').select('id, full_name, email'),
     supabase.from('app_settings').select('work_start, work_end, break_time, break_minutes, lunch_time, lunch_minutes').eq('id', 1).maybeSingle(),
-    supabase.from('assignments').select('work_date, task_id, qty_target').gte('work_date', trendFrom).lte('work_date', toISO(friday)),
+    supabase.from('assignments').select('*').gte('work_date', trendFrom).lte('work_date', toISO(friday)),
   ]);
   const err = week.error || current?.error || demand.error || feed.error || profiles.error || settings.error || trendRows.error;
   if (reportError(err, 'Loading Today')) return;
@@ -289,7 +289,7 @@ export async function renderToday(main) {
   const outputTask = new Set(week.tasks.filter((t) => t.counts_as_output).map((t) => t.id));
   const trendVals = trendWeeks.map((m) => {
     const a = toISO(m); const b = toISO(addDays(m, 4));
-    return trendRows.data.filter((r) => r.work_date >= a && r.work_date <= b && outputTask.has(r.task_id)).reduce((t, r) => t + (r.qty_target || 0), 0);
+    return trendRows.data.filter((r) => r.work_date >= a && r.work_date <= b && outputTask.has(r.task_id) && !r.part_of).reduce((t, r) => t + (r.qty_target || 0), 0);
   });
   const trendCanvas = h('canvas', { 'aria-label': 'Planned units over the last eight weeks', role: 'img' });
   const trendCard = h('section', { class: 'card' },
@@ -323,7 +323,7 @@ export async function renderToday(main) {
     equipRows.length ? h('div', { class: 'chart-box', style: `height:${Math.max(110, equipRows.length * 34 + 30)}px` }, equipCanvas) : h('p', { class: 'muted' }, 'No equipment set up.'));
 
   // ---------------------------------------------------------------- test areas (today)
-  const capToday = capacityForDay(now.assignments, now.capacity, todayISO);
+  const capToday = capacityForDay(now.assignments, (now.capacityCfg || now.capacity), todayISO);
   const areaRows = new Map();
   const testCard = h('section', { class: 'card test-card' },
     h('h2', {}, 'Test areas'),
@@ -353,7 +353,7 @@ export async function renderToday(main) {
   );
   const updateTestNow = (m) => {
     const [dayStart] = intervalOf({ work_date: todayISO });
-    const c = capacityAt(now.assignments, now.capacity, dayStart + m);
+    const c = capacityAt(now.assignments, (now.capacityCfg || now.capacity), dayStart + m);
     for (const a of c.areas) {
       const r = areaRows.get(a.area.id);
       if (!r) continue;

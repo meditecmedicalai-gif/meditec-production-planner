@@ -12,6 +12,7 @@ import { editDayHours } from './hoursEditor.js';
 import { openExport } from './exportDialog.js';
 import { personDay, placeOn, isTimed, DEFAULT_HOURS, fmtMin, toMin } from '../daytime.js';
 import { makeHours, hoursText, oneOffText, WEEKDAY_NAMES, isoDow } from '../hours.js';
+import { placeJob, segmentsOf, pauses, breakMinutes } from '../timing.js';
 import { dayTimeline, dayBar, viewRange, jobText } from './dayTimeline.js';
 import {
   toISO, fromISO, addDays, mondayOf, today, isoWeek,
@@ -76,9 +77,14 @@ export async function loadRange(from, to) {
     skills: supabase.from('person_skills').select('person_id, pump_model_id'),
     // Jobs starting this week, plus ones that started earlier and run into it
     // (overnight from the day before, or with an end date in this week or later).
-    assignments: supabase.from('assignments').select(JOB_COLUMNS)
-      .lte('work_date', to).or(`work_date.gte.${dayBefore},end_date.gte.${from}`)
-      .order('start_time', { nullsFirst: true }).order('created_at'),
+    // pause_for_breaks / part_of come with migration 009 — fall back without them if it hasn't been run yet
+    assignments: (async () => {
+      const run = (cols) => supabase.from('assignments').select(cols)
+        .lte('work_date', to).or(`work_date.gte.${dayBefore},end_date.gte.${from}`)
+        .order('start_time', { nullsFirst: true }).order('created_at');
+      const r1 = await run(`${JOB_COLUMNS}, pause_for_breaks, part_of`);
+      return r1.error ? run(JOB_COLUMNS) : r1;
+    })(),
     absences: supabase.from('absences').select('id, person_id, start_date, end_date, absence_type, notes').lte('start_date', to).gte('end_date', from),
     equipment: supabase.from('equipment').select('id, name, notes, active, sort_order, test_area_id').order('sort_order').order('name'),
     areas: supabase.from('test_areas').select('*').order('sort_order').order('name'),
@@ -99,7 +105,21 @@ export async function loadRange(from, to) {
   const r = Object.fromEntries(keys.map((k, i) => [k, res[i].data]));
 
   const byId = (rows) => new Map(rows.map((x) => [x.id, x]));
+  // Continued jobs: also load the other parts outside this range, so "part 1 of 2" is right
+  let partRows = [];
+  {  // (before migration 009 these queries fail quietly → no parts)
+    const ids = r.assignments.map((a) => a.id);
+    const roots = [...new Set(r.assignments.map((a) => a.part_of).filter(Boolean))];
+    const [kids, parents] = await Promise.all([
+      ids.length ? supabase.from('assignments').select('id, part_of, work_date').in('part_of', ids) : { data: [] },
+      roots.length ? supabase.from('assignments').select('id, part_of, work_date').in('id', roots) : { data: [] },
+    ]);
+    const parentIds = (parents.data || []).map((x) => x.id);
+    const siblings = parentIds.length ? await supabase.from('assignments').select('id, part_of, work_date').in('part_of', parentIds) : { data: [] };
+    partRows = [...(kids.data || []), ...(parents.data || []), ...(siblings.data || [])];
+  }
   return {
+    partRows,
     people: r.people,
     models: r.models, modelById: byId(r.models),
     tasks: r.tasks, taskById: byId(r.tasks),
@@ -127,10 +147,14 @@ export async function loadRange(from, to) {
 export function makeCtx(data) {
   const capCache = new Map();
   const dayCache = new Map();
+  const absentOn = (personId, iso) => data.absences.some((a) => a.person_id === personId && a.start_date <= iso && a.end_date >= iso);
+  const placeOpts = { hoursFor: (p, iso) => data.workHours.forDay(p, iso), isBg: (a) => isBackground(a, data.taskById.get(a.task_id)), absentOn };
+  const capCfg = { ...data.capacity, segmentsOf: (j) => segmentsOf(j, placeOpts) };
   // order inside a day: by start time; jobs without a time last
   const startKey = (a, iso) => (isTimed(a) ? placeOn(a, iso).s : Infinity);
   return {
     ...data,
+    capacityCfg: capCfg,
     absenceOn(personId, iso) {
       return data.absences.find((a) => a.person_id === personId && a.start_date <= iso && a.end_date >= iso) || null;
     },
@@ -154,9 +178,31 @@ export function makeCtx(data) {
       const key = `${personId}|${iso}`;
       if (!dayCache.has(key)) {
         const { attended, background } = this.jobsOn(personId, iso);
-        dayCache.set(key, personDay({ jobs: [...attended, ...background], iso, isBg: (a) => this.isBg(a), hours: this.hoursFor(personId, iso), absent: this.absenceOn(personId, iso) }));
+        dayCache.set(key, personDay({ jobs: [...attended, ...background], iso, isBg: (a) => this.isBg(a), hours: this.hoursFor(personId, iso), absent: this.absenceOn(personId, iso), place: this.place }));
       }
       return dayCache.get(key);
+    },
+    /** A job continued on the next working day(s): { n, total, first } or null. */
+    partInfo(a) {
+      const root = a.part_of || a.id;
+      const all = new Map([...(data.partRows || []), ...data.assignments].map((x) => [x.id, x]));
+      const group = [...all.values()].filter((x) => x.id === root || x.part_of === root);
+      if (group.length < 2) return null;
+      group.sort((x, y) => (x.work_date < y.work_date ? -1 : x.work_date > y.work_date ? 1 : 0));
+      return { n: group.findIndex((x) => x.id === a.id) + 1, total: group.length, first: group[0] };
+    },
+    /** Where a job sits on a day: attended multi-day jobs only take each day's working hours. */
+    place(a, iso) {
+      return placeJob(a, iso, placeOpts);
+    },
+    /** Work minutes of a job on a day (less breaks when it pauses for them). */
+    workMinutes(a, iso) {
+      const p = placeJob(a, iso, placeOpts);
+      if (!p || !isTimed(a)) return null;
+      const s = Math.max(0, p.s); const e = Math.min(24 * 60, p.e);
+      if (!pauses(a, this.isBg(a)) || !a.person_id) return e - s;
+      const day = this.dayOf(a.person_id, iso);
+      return e - s - breakMinutes(s, e, day.breaks);
     },
     /** The person's own working hours on a day (pattern → overrides → one-off change). */
     hoursFor(personId, iso) {
@@ -174,13 +220,15 @@ export function makeCtx(data) {
         return [`${first} doesn’t work on ${WEEKDAY_NAMES[isoDow(iso) - 1]}s${hrs.pattern ? ` (${hrs.pattern.name})` : ''}.`];
       }
       if (bg || !isTimed(a)) return [];
-      const p = placeOn(a, iso);
+      const p = placeJob(a, iso, placeOpts);
+      if (!p) return [];
       const s0 = Math.max(p.s, 0); const e0 = Math.min(p.e, 24 * 60);
       const day = personDay({ jobs: [], iso, isBg: () => false, hours: hrs });
       return s0 < day.ws || e0 > day.we ? [`Outside ${first}’s hours (${hoursText(hrs)}).`] : [];
     },
-    /** ⏰ notes (no confirmation needed): an attended job that runs across the person's break or lunch. */
+    /** ⏰ notes (no confirmation needed): an attended job set to work THROUGH the person's break or lunch. */
     breakNotes(a, personName, iso) {
+      if (a.pause_for_breaks !== false) return []; // pausing for breaks is the normal case
       if (!a.person_id || !isTimed(a) || this.isBg(a) || this.absenceOn(a.person_id, iso)) return [];
       const hrs = this.hoursFor(a.person_id, iso);
       if (!hrs.works) return [];
@@ -189,11 +237,11 @@ export function makeCtx(data) {
       const s0 = Math.max(p.s, 0); const e0 = Math.min(p.e, 24 * 60);
       const day = personDay({ jobs: [], iso, isBg: () => false, hours: hrs });
       return day.breaks.filter((b) => s0 < b.e && b.s < e0)
-        .map((b) => `Runs across ${first}’s ${b.label.toLowerCase()} (${fmtMin(b.s)}–${fmtMin(b.e)}).`);
+        .map((b) => `Works through ${first}’s ${b.label.toLowerCase()} (${fmtMin(b.s)}–${fmtMin(b.e)}) — not pausing for it.`);
     },
     /** Test capacity for a day (cached). */
     capDay(iso) {
-      if (!capCache.has(iso)) capCache.set(iso, capacityForDay(data.assignments, data.capacity, iso));
+      if (!capCache.has(iso)) capCache.set(iso, capacityForDay(data.assignments, capCfg, iso));
       return capCache.get(iso);
     },
     /** Equipment / person time clashes against the loaded week, as messages. */
@@ -354,6 +402,7 @@ export async function renderPlanner(main) {
     const continuing = iso !== a.work_date;
     const warnings = warningsOf(a, person, iso);
     const notes = ctx.breakNotes(a, person.name, iso);
+    const part = ctx.partInfo(a);
     const label = [pump, type?.name, task?.name, a.qty_target != null ? a.qty_target : null].filter((x) => x != null).join(' · ');
     return h('button', {
       type: 'button',
@@ -373,10 +422,11 @@ export async function renderPlanner(main) {
         pump ? h('span', { class: 'chip-model' }, pump) : null,
         type ? typeTag(type) : null,
         h('span', { class: 'chip-task' }, task?.name ?? '?'),
-        a.qty_target != null && !continuing ? h('span', { class: 'chip-qty' }, `× ${a.qty_target}`) : null,
+        a.qty_target != null && !continuing && !(part && part.n > 1) ? h('span', { class: 'chip-qty' }, `× ${a.qty_target}`) : null,
       ),
-      equip ? h('span', { class: 'chip-meta' }, h('span', { class: 'equip-tag' }, equip.name)) : null,
-      a.notes && !continuing ? h('span', { class: 'chip-notes' }, a.notes) : null,
+      equip || part ? h('span', { class: 'chip-meta' }, part ? h('span', { class: 'part-tag', title: `Continued job: part ${part.n} of ${part.total}` }, `↪ part ${part.n} of ${part.total}`) : null,
+        equip ? h('span', { class: 'equip-tag' }, equip.name) : null) : null,
+      a.notes && !continuing && !(part && part.n > 1) ? h('span', { class: 'chip-notes' }, a.notes) : null,
     );
   };
 

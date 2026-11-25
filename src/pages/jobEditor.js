@@ -6,8 +6,9 @@ import { endDateOf, timeLabel, overlaps, hm, ABSENCE_TYPES } from '../jobs.js';
 import { capacityForDay, isTestingJob, stationMismatch } from '../capacity.js';
 import { PATTERNS, describe as describeRepeat, isoDow, JOB_FIELDS, pick } from '../recurring.js';
 import { toISO, fromISO, addDays, today, fmtDayShort, fmtDayLong } from '../dates.js';
-import { placeOn, fmtMin } from '../daytime.js';
-import { hoursText } from '../hours.js';
+import { placeOn, fmtMin, toMin, workDay, nextFree, fmtDur } from '../daytime.js';
+import { hoursText, makeHours } from '../hours.js';
+import { addWork, breakMinutes, workBetween, planWork, dayInfoFrom, parseDuration } from '../timing.js';
 import { miniDay } from './dayTimeline.js';
 
 const ANY = '__any';
@@ -139,7 +140,25 @@ export function editAssignment({ ctx, person, iso, assignment, isoDays, personBy
   const startTime = h('input', { type: 'time', step: 300, value: hm(src?.start_time) ?? '' });
   const endTime = h('input', { type: 'time', step: 300, value: hm(src?.end_time) ?? '' });
   const spanDays = src?.end_date ? Math.round((fromISO(src.end_date) - fromISO(src.work_date || iso)) / 86400000) : null;
-  const endDate = h('input', { type: 'date', value: assignment?.end_date ?? '' });
+  // "Ends on" is only for jobs over several days: hidden behind its own switch so it
+  // can't be filled by accident (a stray key in a date box sets today's date).
+  const endDate = h('input', { type: 'date', value: src?.end_date && src.end_date > (src.work_date || iso) && assignment ? src.end_date : '' });
+  const multiDay = checkbox('Runs over several days', Boolean(src?.end_date && src.end_date > (src.work_date || iso)));
+  const clearEnd = h('button', { type: 'button', class: 'btn btn-xs btn-ghost', title: 'Make it a one-day job again',
+    onclick: () => { endDate.value = ''; multiDay.input.checked = false; changed(); } }, 'Clear');
+  const endDateBox = h('div', { class: 'multi-day-box' }, field('Ends on', endDate, 'The last day of the job'), clearEnd);
+  const workDur = h('input', { type: 'text', placeholder: 'e.g. 1h 30m', 'aria-label': 'Work time', autocomplete: 'off' });
+  const pauseBox = checkbox('Pause for breaks', src?.pause_for_breaks !== false);
+  const summaryBox = h('div', { class: 'timing-summary', 'aria-live': 'polite' });
+  let durMode = 'end';
+  let overtimeOK = false;      // "Keep as is (overtime)"
+  let splitPlan = null;        // "Continue next working day": [{ date, start, end, work, paused }]
+  let startTouched = Boolean(src?.start_time);
+  const modeEnd = h('button', { type: 'button', class: 'seg-btn active', 'aria-pressed': 'true', onclick: () => setMode('end') }, 'End time');
+  const modeWork = h('button', { type: 'button', class: 'seg-btn', 'aria-pressed': 'false', onclick: () => setMode('work') }, 'Work time');
+  const endField = field('End time', endTime, 'Earlier than start = next day');
+  const workField = field('Work time', workDur, 'Breaks are added automatically');
+  workField.hidden = true;
   const bgSel = h('select', {});
   let bgInit = false;
   const setBgOptions = () => {
@@ -166,14 +185,152 @@ export function editAssignment({ ctx, person, iso, assignment, isoDays, personBy
   const modelField = field('Pump model', pumps.modelSel);
   const typeField = field('Build type', typeSel);
 
+  const isBgNow = () => (bgSel.value === '' ? Boolean(ctx.taskById.get(taskSel.value)?.is_background) : bgSel.value === 'true');
+  const personHours = (d) => (personSel.value && ctx.hoursFor ? ctx.hoursFor(personSel.value, d) : null);
+
+  /** Effective times on day d: end from the end time or the work time (+ breaks), else the end of the person's day. */
+  const timesFor = (d) => {
+    if (!d) return { s: null, e: null, paused: 0, work: null, multi: multiDay.input.checked };
+    const s0 = startTime.value ? toMin(startTime.value) : null;
+    const hrs = personHours(d);
+    const day = hrs?.works ? workDay(hrs) : null;
+    const bg = isBgNow();
+    const pause = pauseBox.input.checked && !bg;
+    const brk = pause && day ? day.breaks : [];
+    const out = { s: s0, e: null, paused: 0, work: null, auto: false, hrs, day, bg, pause, multi: multiDay.input.checked };
+    if (s0 == null || out.multi) { if (out.multi && endTime.value) out.e = toMin(endTime.value); return out; }
+    if (durMode === 'work') {
+      const w = parseDuration(workDur.value);
+      if (w != null) { const r2 = addWork(s0, w, brk); Object.assign(out, { e: r2.end, paused: r2.paused, work: w }); }
+    } else if (endTime.value) {
+      let e = toMin(endTime.value); if (e <= s0) e += 24 * 60;
+      Object.assign(out, { e, paused: breakMinutes(s0, e, brk), work: e - s0 - breakMinutes(s0, e, brk) });
+    }
+    if (out.e == null && !bg && day && s0 < day.we) {
+      // start only: until their next job (the end of this free slot), else the end of their day
+      const others = ctx.jobsOn ? ctx.jobsOn(personSel.value, d).attended.filter((o) => o.id !== assignment?.id && o.start_time) : [];
+      const nextStart = Math.min(day.we, ...others.map((o) => (ctx.place ? ctx.place(o, d) : placeOn(o, d))).filter((pl) => pl && pl.s > s0).map((pl) => pl.s));
+      Object.assign(out, { e: nextStart, auto: nextStart < day.we ? 'slot' : 'day', paused: breakMinutes(s0, nextStart, brk), work: workBetween(s0, nextStart, brk, pause) });
+    }
+    return out;
+  };
+  const endText = (e) => (e == null ? null : fmtMin(e >= 24 * 60 ? e - 24 * 60 : e));
+
   /** The job(s) as they would be saved, for warnings. */
-  const proposed = () => selectedDates().filter(Boolean).map((d, i) => ({
-    id: assignment?.id || `proposed-${i}`, person_id: personSel.value, task_id: taskSel.value, work_date: d,
-    ...pumps.values(), qty_target: qty.value === '' ? null : Number(qty.value),
-    start_time: startTime.value || null, end_time: endTime.value || null,
-    end_date: isNew ? (spanDays != null && !endDate.value ? toISO(addDays(fromISO(d), spanDays)) : endDate.value || null) : endDate.value || null,
-    equipment_id: equipSel.value || null, background: bgSel.value === '' ? null : bgSel.value === 'true',
-  }));
+  const proposed = () => selectedDates().filter(Boolean).map((d, i) => {
+    const t = timesFor(d);
+    const part = splitPlan && i === 0 ? splitPlan[0] : null;
+    return {
+      id: assignment?.id || `proposed-${i}`, person_id: personSel.value, task_id: taskSel.value, work_date: d,
+      ...pumps.values(), qty_target: qty.value === '' ? null : Number(qty.value),
+      start_time: startTime.value || null,
+      end_time: part ? fmtMin(part.end) : t.multi ? endTime.value || null : t.e != null && (durMode === 'work' || t.auto) ? endText(t.e) : endTime.value || null,
+      end_date: multiDay.input.checked
+        ? (endDate.value || (isNew && spanDays ? toISO(addDays(fromISO(d), spanDays)) : null))
+        : null,
+      equipment_id: equipSel.value || null, background: bgSel.value === '' ? null : bgSel.value === 'true',
+      pause_for_breaks: pauseBox.input.checked,
+    };
+  });
+  /** Parts 2, 3 … of a job continued on the next working day(s). */
+  const extraParts = () => (splitPlan ? splitPlan.slice(1) : []);
+
+  function setMode(mode) {
+    if (mode === durMode) return;
+    const t = timesFor(selectedDates()[0]);
+    if (mode === 'work' && t.work != null) workDur.value = fmtDur(t.work).replace(/ /g, ' ');
+    if (mode === 'end' && t.e != null) endTime.value = endText(t.e);
+    durMode = mode;
+    endField.hidden = mode !== 'end'; workField.hidden = mode !== 'work';
+    modeEnd.classList.toggle('active', mode === 'end'); modeWork.classList.toggle('active', mode === 'work');
+    modeEnd.setAttribute('aria-pressed', String(mode === 'end')); modeWork.setAttribute('aria-pressed', String(mode === 'work'));
+    changed();
+  }
+  /** Any change to the timing invalidates an earlier choice (split / overtime). */
+  function changed() { splitPlan = null; overtimeOK = false; refresh(); }
+
+  /** "Continue next working day": spread the rest of the work over their next working days. */
+  async function continueNextDay() {
+    const d = selectedDates()[0]; const pid = personSel.value; const t = timesFor(d);
+    if (!pid || t.s == null || t.e == null) return;
+    const total = t.work ?? workBetween(t.s, t.e, t.day?.breaks || [], t.pause);
+    const until = toISO(addDays(fromISO(d), 30));
+    const [ab, dh] = await Promise.all([
+      supabase.from('absences').select('person_id, start_date, end_date').eq('person_id', pid).lte('start_date', until).gte('end_date', d),
+      supabase.from('person_day_hours').select('*').eq('person_id', pid).gte('work_date', d).lte('work_date', until).then((x) => (x.error ? { data: [] } : x)),
+    ]);
+    const absences = [...(ab.data || []), ...ctx.absences.filter((a) => a.person_id === pid)];
+    const hrs = makeHours({ patterns: ctx.patterns || [], patternDays: ctx.patternDays || [], personPatterns: ctx.personPatterns || [],
+      dayHours: [...(ctx.dayHours || []).filter((x) => x.person_id !== pid || x.work_date < d), ...(dh.data || [])], settings: ctx.hours });
+    const absentOn = (p, iso) => absences.some((a) => a.start_date <= iso && a.end_date >= iso);
+    const parts = planWork({ iso: d, start: t.s, work: total, pause: t.pause, dayInfo: dayInfoFrom(hrs.forDay, absentOn, pid) });
+    if (parts.length < 2) return;
+    splitPlan = parts; overtimeOK = false;
+    durMode = 'end'; endField.hidden = false; workField.hidden = true; modeEnd.classList.add('active'); modeWork.classList.remove('active');
+    endTime.value = fmtMin(parts[0].end);
+    refresh();
+  }
+
+  /** One-line summary + choices when the job doesn't fit the person's hours. */
+  function renderSummary(first, p) {
+    if (!first || !p) { mount(summaryBox); return; }
+    const d = first.work_date; const t = timesFor(d);
+    const who = p.name.split(' ')[0];
+    const dayName = fmtDayShort(fromISO(d)).split(' ')[0];
+    if (t.s == null) {
+      mount(summaryBox, h('p', { class: 'ts-line muted' }, `${who} · ${dayName} · no times — counts as all day (add a start time to place it)`));
+      return;
+    }
+    if (t.multi) {
+      const last = first.end_date;
+      mount(summaryBox, h('p', { class: 'ts-line ts-multi' }, `⇢ Multi-day: ${who} · ${dayName} ${fmtMin(t.s)} → ${last ? fmtDayShort(fromISO(last)) : '…'}${endTime.value ? ` ${endTime.value}` : ''}`,
+        t.bg ? ' · runs continuously in the background' : ' · counts only their working hours each day (not overnight)'));
+      return;
+    }
+    if (t.bg) {
+      mount(summaryBox, h('p', { class: 'ts-line' }, `⏱ Background · ${dayName} ${fmtMin(t.s)}${t.e != null ? `–${endText(t.e)}${t.e >= 24 * 60 ? ' next day' : ''}` : ' onwards'} · runs through breaks and doesn’t keep ${who} busy`));
+      return;
+    }
+    const hrs = t.hrs; const day = t.day;
+    const span = `${fmtMin(t.s)}–${t.e != null ? endText(t.e) : '…'}`;
+    const brk = t.paused ? ` (incl. ${t.paused} min break)` : '';
+    const lines = [];
+    const actions = [];
+    if (!hrs?.works) {
+      lines.push(h('p', { class: 'ts-line ts-warn' }, `⚠ ${who} · ${dayName} ${span}${brk} · not a working day for ${who}`));
+    } else {
+      const early = t.s < day.ws;
+      const late = t.e != null && t.e > day.we;
+      if (splitPlan) {
+        lines.push(h('p', { class: 'ts-line ts-ok' }, `${who} · continued over ${splitPlan.length} working days ✓`),
+          h('ul', { class: 'ts-parts' }, splitPlan.map((x) => h('li', {}, `${fmtDayShort(fromISO(x.date))} ${fmtMin(x.start)}–${fmtMin(x.end)}${x.paused ? ` (incl. ${x.paused} min break)` : ''}`))));
+        actions.push(h('button', { type: 'button', class: 'btn btn-xs', onclick: () => { splitPlan = null; endTime.value = t.e != null ? endText(timesFor(d).e) : endTime.value; refresh(); } }, 'Undo'));
+      } else if (late && !overtimeOK) {
+        lines.push(h('p', { class: 'ts-line ts-warn' }, `⚠ ${who} · ${dayName} ${span}${brk} · runs ${fmtDur(t.e - day.we)} past ${who}’s finish (${fmtMin(day.we)})`));
+        actions.push(
+          h('button', { type: 'button', class: 'btn btn-xs btn-primary', onclick: continueNextDay }, 'Continue next working day'),
+          h('button', { type: 'button', class: 'btn btn-xs', onclick: () => { overtimeOK = true; refresh(); } }, 'Keep as is (overtime)'),
+          h('button', { type: 'button', class: 'btn btn-xs', onclick: () => { setMode('end'); endTime.value = fmtMin(day.we); changed(); } }, 'Shorten to end of day'));
+      } else if (late && overtimeOK) {
+        lines.push(h('p', { class: 'ts-line ts-ot' }, `${who} · ${dayName} ${span}${brk} · overtime ${fmtDur(t.e - day.we)} (agreed)`));
+        actions.push(h('button', { type: 'button', class: 'btn btn-xs btn-ghost', onclick: () => { overtimeOK = false; refresh(); } }, 'Undo'));
+      }
+      if (early) {
+        lines.push(h('p', { class: 'ts-line ts-warn' }, `⚠ Starts before ${who}’s start (${fmtMin(day.ws)})`));
+        actions.push(h('button', { type: 'button', class: 'btn btn-xs btn-primary', onclick: () => {
+          const len = t.e != null ? t.e - t.s : null;
+          startTime.value = fmtMin(day.ws); startTouched = true;
+          if (durMode === 'end' && len != null && endTime.value) endTime.value = endText(toMin(startTime.value) + len);
+          changed();
+        } }, `Move to ${fmtMin(day.ws)}`));
+      }
+      if (!late && !early && !splitPlan) {
+        lines.push(h('p', { class: 'ts-line ts-ok' }, `${who} · ${dayName} ${span}${brk}${t.auto === 'slot' ? ' (until their next job)' : t.auto ? ` (to the end of ${who}’s day)` : ''} · within hours ✓`));
+      }
+      if (durMode === 'work' && t.e != null && !splitPlan) lines.push(h('p', { class: 'ts-end' }, `Ends ${endText(t.e)}${t.paused ? ` (incl. ${t.paused} min break)` : ''}`));
+    }
+    mount(summaryBox, lines, actions.length ? h('div', { class: 'ts-actions' }, actions) : null);
+  }
 
   const capacityWarnings = () => {
     const jobs = proposed();
@@ -183,7 +340,7 @@ export function editAssignment({ ctx, person, iso, assignment, isoDays, personBy
     const msgs = [];
     for (const job of jobs) {
       for (let d = job.work_date; d <= endDateOf(job); d = toISO(addDays(fromISO(d), 1))) {
-        const c = capacityForDay([...others, ...jobs], ctx.capacity, d);
+        const c = capacityForDay([...others, ...jobs], ctx.capacityCfg || ctx.capacity, d);
         for (const m of c.jobMsgs.get(job.id) || []) {
           const msg = `Test capacity on ${fmtDayShort(fromISO(d))} — ${m}`;
           if (!msgs.includes(msg)) msgs.push(msg);
@@ -196,10 +353,22 @@ export function editAssignment({ ctx, person, iso, assignment, isoDays, personBy
   const refresh = () => {
     setBgOptions();
     pumps.rebuild();
+    // default start: the person's next free slot within their hours (new jobs only, until you type a start)
+    if (isNew && !copyFrom && !times && !startTouched && personSel.value && selectedDates()[0] && ctx.dayOf) {
+      const d0 = selectedDates()[0];
+      const pd = ctx.dayOf(personSel.value, d0);
+      const now = new Date();
+      const fromMin = d0 === toISO(today()) ? now.getHours() * 60 + now.getMinutes() : 0;
+      const slot = nextFree(pd, fromMin);
+      startTime.value = slot ? fmtMin(Math.ceil(slot[0] / 5) * 5) : '';
+    }
+    endDateBox.hidden = !multiDay.input.checked;
+    if (!multiDay.input.checked) endDate.value = '';
+    pauseBox.el.hidden = isBgNow();
     const first = proposed()[0];
-    timeHint.textContent = first && (first.start_time || first.end_date)
-      ? `Shows as: ${timeLabel(first, first.work_date)}${endDateOf(first) !== first.work_date ? ' (and on each following day it covers)' : ''}`
-      : 'No times = all day (counts all day towards test capacity).';
+    timeHint.textContent = first && first.end_date
+      ? `Shows as: ${timeLabel(first, first.work_date)} (and on each following day it covers)`
+      : '';
     const task = ctx.taskById.get(taskSel.value);
     const needsPump = task ? task.requires_pump : true;
     modelField.querySelector('label').textContent = needsPump ? 'Pump model' : 'Pump model (optional)';
@@ -209,6 +378,7 @@ export function editAssignment({ ctx, person, iso, assignment, isoDays, personBy
 
     const p = personById.get(personSel.value);
     renderMini(p, first);
+    renderSummary(first, p);
     const msgs = [];
     const notes = [];
     if (p) {
@@ -219,7 +389,8 @@ export function editAssignment({ ctx, person, iso, assignment, isoDays, personBy
       }
       for (const job of proposed()) {
         const asSaved = { ...job, background: bgSel.value === '' ? null : bgSel.value === 'true' };
-        if (ctx.hoursWarnings) for (const m of ctx.hoursWarnings(asSaved, p.name, job.work_date)) if (!msgs.includes(m)) msgs.push(m);
+        // within-hours checks are shown live in the timing summary; "Outside hours" only needs confirming if not agreed
+        if (ctx.hoursWarnings) for (const m of ctx.hoursWarnings(asSaved, p.name, job.work_date)) if (!msgs.includes(m) && !((overtimeOK || splitPlan) && /^Outside/.test(m))) msgs.push(m);
         if (ctx.breakNotes) for (const m of ctx.breakNotes(asSaved, p.name, job.work_date)) if (!notes.includes(m)) notes.push(m);
         if (!job.task_id) continue;
         for (const m of ctx.clashWarnings(job, personById)) if (!msgs.includes(m)) msgs.push(m);
@@ -229,7 +400,7 @@ export function editAssignment({ ctx, person, iso, assignment, isoDays, personBy
     if (wrongStation) msgs.push(wrongStation);
     msgs.push(...capacityWarnings());
     if (first && !first.start_time && isTestingJob(first, ctx.capacity)) notes.push('No times set — this test job is not counted in test capacity until you add a start and end time.');
-    mount(warnBox, msgs.map((m) => h('p', { class: 'warn-box' }, `⚠ ${m}`)), notes.map((m) => h('p', { class: 'note-box' }, /^Runs across/.test(m) ? `⏰ ${m} Fine if they take it during the job.` : `ℹ ${m}`)));
+    mount(warnBox, msgs.map((m) => h('p', { class: 'warn-box' }, `⚠ ${m}`)), notes.map((m) => h('p', { class: 'note-box' }, /^Works through/.test(m) ? `⏰ ${m}` : `ℹ ${m}`)));
     return msgs;
   };
   /** The person's day as a mini timeline, with this job on it. */
@@ -240,7 +411,8 @@ export function editAssignment({ ctx, person, iso, assignment, isoDays, personBy
     const others = [...attended, ...background].filter((x) => x.id !== assignment?.id);
     const task = ctx.taskById.get(taskSel.value);
     const bg = bgSel.value === '' ? Boolean(task?.is_background) : bgSel.value === 'true';
-    const proposedSpan = job.start_time ? placeOn(job, d) : null;
+    const tt = timesFor(d);
+    const proposedSpan = job.start_time && !tt.multi && tt.e != null ? { s: tt.s, e: tt.e } : job.start_time ? placeOn(job, d) : null;
     mount(miniBox,
       h('div', { class: 'mini-head' }, h('b', {}, `${p.name.split(' ')[0]}’s day`), ` · ${fmtDayShort(fromISO(d))}`,
         ctx.hoursFor ? h('span', { class: 'muted small' }, ` · hours ${hoursText(ctx.hoursFor(p.id, d))}`) : null,
@@ -248,16 +420,18 @@ export function editAssignment({ ctx, person, iso, assignment, isoDays, personBy
       miniDay({
         ctx, jobs: others, iso: d, hours: ctx.hoursFor ? ctx.hoursFor(p.id, d) : ctx.hours, absent: ctx.absenceOn(p.id, d),
         proposed: proposedSpan ? { ...proposedSpan, bg } : null,
-        onPick: (s, e) => { startTime.value = fmtMin(s); endTime.value = fmtMin(e); refresh(); },
+        onPick: (s, e) => { startTouched = true; startTime.value = fmtMin(s); if (durMode !== 'end') setMode('end'); endTime.value = fmtMin(e); changed(); },
       }));
   }
-  for (const el of [personSel, taskSel, pumps.modelSel, typeSel, qty, dateInput, startTime, endTime, endDate, bgSel, equipSel,
-    ...(dayBoxes || []).map((b) => b.input), repeat?.patternSel]) {
-    el?.addEventListener('change', refresh);
-  }
+  for (const el of [taskSel, pumps.modelSel, typeSel, qty, equipSel, repeat?.patternSel]) el?.addEventListener('change', refresh);
+  // anything that moves the job in time re-checks it against the person's hours straight away
+  for (const el of [personSel, dateInput, endDate, bgSel, multiDay.input, pauseBox.input, ...(dayBoxes || []).map((b) => b.input)]) el?.addEventListener('change', changed);
+  // (registered first, so a start you type is never replaced by the suggested one)
+  startTime.addEventListener('input', () => { startTouched = true; });
+  startTime.addEventListener('change', () => { startTouched = true; });
+  // 'input' only: a 'change' on blur would redraw the summary under the mouse and swallow a click on its buttons
+  for (const el of [startTime, endTime, workDur]) el.addEventListener('input', changed);
   qty.addEventListener('input', refresh);
-  startTime.addEventListener('input', refresh);
-  endTime.addEventListener('input', refresh);
 
   const save = async () => {
     error.textContent = '';
@@ -272,8 +446,10 @@ export function editAssignment({ ctx, person, iso, assignment, isoDays, personBy
     if (!dates.length) { error.textContent = rep.pattern ? 'Tick the first day it starts on.' : 'Please choose at least one day.'; return false; }
     if (!personSel.value && !rep.pattern) { error.textContent = 'Choose a person (only recurring jobs can wait for a person).'; return false; }
     if (qty.value !== '' && (!Number.isInteger(Number(qty.value)) || Number(qty.value) < 0)) { error.textContent = 'Quantity must be a whole number (0 or more).'; return false; }
-    if (endTime.value && !startTime.value) { error.textContent = 'Add a start time (or clear the end time).'; return false; }
-    if (endDate.value && endDate.value < dates[0]) { error.textContent = 'The end date is before the start date.'; return false; }
+    if ((endTime.value || workDur.value) && !startTime.value) { error.textContent = 'Add a start time (or clear the end / work time).'; return false; }
+    if (durMode === 'work' && workDur.value && parseDuration(workDur.value) == null) { error.textContent = 'Enter the work time like 1h 30m, 2h or 45m.'; return false; }
+    if (multiDay.input.checked && !endDate.value) { error.textContent = 'Choose the last day (Ends on), or untick "Runs over several days".'; return false; }
+    if (endDate.value && endDate.value <= dates[0]) { error.textContent = '"Ends on" must be after the first day — or untick "Runs over several days".'; return false; }
     if (endDate.value && (dates.length > 1 || rep.pattern)) { error.textContent = 'With an end date, tick only the start day and don’t repeat.'; return false; }
     if ((rep.pattern === 'weekly' || rep.pattern === 'every_n_weeks') && !rep.weekdays.length) { error.textContent = 'Choose the day(s) it repeats on.'; return false; }
     if (rep.end_date && rep.end_date < dates[0]) { error.textContent = '"Repeat until" is before the start.'; return false; }
@@ -306,10 +482,13 @@ export function editAssignment({ ctx, person, iso, assignment, isoDays, personBy
       qty_target: qty.value === '' ? null : Number(qty.value),
       notes: notes.value.trim() || null,
       start_time: startTime.value || null,
-      end_time: endTime.value || null,
+      end_time: proposed()[0]?.end_time ?? (endTime.value || null),
       background: bgSel.value === '' ? null : bgSel.value === 'true',
       equipment_id: equipSel.value || null,
     };
+    // only sent when off, so the form also works before migration 009
+    if (!pauseBox.input.checked) values.pause_for_breaks = false;
+    else if (assignment && assignment.pause_for_breaks === false) values.pause_for_breaks = true;
 
     // New recurring job → template + generated jobs
     if (isNew && rep.pattern) {
@@ -324,8 +503,23 @@ export function editAssignment({ ctx, person, iso, assignment, isoDays, personBy
       return true;
     }
 
-    const rowsToSave = proposed().map((j) => ({ ...values, work_date: j.work_date, end_date: j.end_date }));
+    const rowsToSave = proposed().map((j) => ({ ...values, end_time: j.end_time, work_date: j.work_date, end_date: j.end_date }));
+    // continued on the next working day(s): parts 2, 3 … point at part 1
+    const saveParts = async (firstId) => {
+      const more = extraParts().map((x) => ({ ...values, work_date: x.date, end_date: null, start_time: fmtMin(x.start), end_time: fmtMin(x.end), part_of: firstId }));
+      if (!more.length) return true;
+      const { error: err } = await supabase.from('assignments').insert(more);
+      return !reportError(err, 'Saving the next day');
+    };
     if (isNew) {
+      if (extraParts().length) {
+        const { data: one, error: err } = await supabase.from('assignments').insert(rowsToSave[0]).select('id').single();
+        if (reportError(err, 'Saving')) return false;
+        if (!(await saveParts(one.id))) return false;
+        toast(`Saved over ${splitPlan.length} working days.`, 'success');
+        onSaved();
+        return true;
+      }
       const { error: err } = await supabase.from('assignments').insert(rowsToSave);
       if (reportError(err, 'Saving')) return false;
       toast(dates.length > 1 ? `Added to ${dates.length} days.` : 'Saved.', 'success');
@@ -343,7 +537,8 @@ export function editAssignment({ ctx, person, iso, assignment, isoDays, personBy
     }
     const { error: err } = await supabase.from('assignments').update(rowsToSave[0]).eq('id', assignment.id);
     if (reportError(err, 'Saving')) return false;
-    toast('Saved.', 'success');
+    if (!(await saveParts(assignment.part_of || assignment.id))) return false;
+    toast(extraParts().length ? `Saved over ${splitPlan.length} working days.` : 'Saved.', 'success');
     onSaved();
     return true;
   };
@@ -403,8 +598,12 @@ export function editAssignment({ ctx, person, iso, assignment, isoDays, personBy
       field('Quantity target', qty, 'Units to complete — for testing tasks, the number of pumps on test.'),
       h('fieldset', { class: 'skills-fieldset' },
         h('legend', {}, 'Timing & equipment (optional)'),
-        h('div', { class: 'form-grid form-grid-3' },
-          field('Start time', startTime), field('End time', endTime, 'Earlier than start = next day'), field('Ends on', endDate, 'Only for jobs over several days')),
+        h('div', { class: 'form-grid form-grid-3 timing-grid' },
+          field('Start time', startTime),
+          h('div', { class: 'field' }, h('div', { class: 'seg seg-sm', role: 'group', 'aria-label': 'Set the end by' }, modeEnd, modeWork), endField, workField),
+          h('div', { class: 'field timing-checks' }, pauseBox.el, multiDay.el)),
+        endDateBox,
+        summaryBox,
         timeHint,
         miniBox,
         h('div', { class: 'form-grid form-grid-2' }, field('Runs', bgSel), field('Equipment / test station', equipSel)),

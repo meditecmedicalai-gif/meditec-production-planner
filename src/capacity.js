@@ -119,7 +119,10 @@ export function capacityInWindow(jobs, cfg, from, to) {
     const [s, e] = intervalOf(j);
     if (!(e > from && s < to)) continue;
     if (!j.start_time) { untimed.push({ job: j, area: testAreaOf(j, cfg) }); continue; }
-    tj.push({ j, s: Math.max(s, from), e: Math.min(e, to) });
+    // attended multi-day jobs: only the working hours of each day (cfg.segmentsOf, set by the planner)
+    for (const [ss, se] of cfg.segmentsOf ? cfg.segmentsOf(j) : [[s, e]]) {
+      if (se > from && ss < to) tj.push({ j, s: Math.max(ss, from), e: Math.min(se, to) });
+    }
   }
   const pts = [...new Set([from, ...tj.map((x) => x.s), ...tj.map((x) => x.e)])].filter((p) => p >= from && p < to).sort((a, b) => a - b);
 

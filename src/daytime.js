@@ -77,13 +77,15 @@ export const isTimed = (job) => Boolean(job.start_time);
  * Returns { attended:[{job,s,e}], background:[{job,s,e}], untimed:[job], busy:[[s,e]],
  *           free:[[s,e]], breaks, ws, we, busyMin, freeMin, absent }
  */
-export function personDay({ jobs, iso, isBg, hours, absent = null }) {
+export function personDay({ jobs, iso, isBg, hours, absent = null, place = null }) {
   const { ws, we, breaks } = workDay(hours);
   const attended = []; const background = []; const untimed = [];
   const byStart = (a, b) => a.s - b.s || a.e - b.e;
   for (const job of jobs) {
     if (!isTimed(job)) { if (!isBg(job)) untimed.push(job); else background.push({ job, ...placeOn(job, iso), untimed: true }); continue; }
-    (isBg(job) ? background : attended).push({ job, ...placeOn(job, iso) });
+    const pl = place ? place(job, iso) : placeOn(job, iso);
+    if (!pl) continue; // e.g. a multi-day job on a non-working day
+    (isBg(job) ? background : attended).push({ job, ...pl });
   }
   attended.sort(byStart); background.sort(byStart);
   const nonWorking = hours?.works === false;
