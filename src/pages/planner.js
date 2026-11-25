@@ -9,7 +9,8 @@ import { isBackground, coversDay, endDateOf, timeLabel, clashes, hm, pumpLabel, 
 import { capacityConfig, capacityForDay, level, stationMismatch, occupancyText, equipmentShared } from '../capacity.js';
 import { occupancySvg, occupancyPopover } from './occupancy.js';
 import { describe as describeRepeat, matches as repeatMatches } from '../recurring.js';
-import { editAssignment, editTemplate, deleteTemplate, saveTemplateTimes } from './jobEditor.js';
+import { editAssignment, editTemplate, deleteTemplate, saveTemplateTimes, openWholeJob } from './jobEditor.js';
+import { moveWholeJob, copyWholeJob, loadJobRows, restoreJob, splitText } from '../jobSeries.js';
 import { editDayHours } from './hoursEditor.js';
 import { openExport } from './exportDialog.js';
 import { personDay, placeOn, isTimed, DEFAULT_HOURS, fmtMin, toMin } from '../daytime.js';
@@ -85,6 +86,8 @@ export async function loadRange(from, to) {
         .lte('work_date', to).or(`work_date.gte.${dayBefore},end_date.gte.${from}`)
         .order('start_time', { nullsFirst: true }).order('created_at');
       // newest columns first; fall back if a migration hasn't been run yet (011 → 009 → base)
+      const r013 = await run(`${JOB_COLUMNS}, pause_for_breaks, part_of, demand_id, qty_done, todo_id, work_minutes, part_locked`);
+      if (!r013.error) return r013;
       const r00 = await run(`${JOB_COLUMNS}, pause_for_breaks, part_of, demand_id, qty_done, todo_id`);
       if (!r00.error) return r00;
       const r0 = await run(`${JOB_COLUMNS}, pause_for_breaks, part_of, demand_id`);
@@ -104,6 +107,7 @@ export async function loadRange(from, to) {
     patternDays: optional(supabase.from('work_pattern_days').select('*')),
     personPatterns: optional(supabase.from('person_work_patterns').select('*').order('effective_from')),
     dayHours: optional(supabase.from('person_day_hours').select('*').gte('work_date', from).lte('work_date', to)),
+    overflow: optional(supabase.from('app_settings').select('overflow_mode').eq('id', 1).maybeSingle()),   // migration 013
   };
   const keys = Object.keys(q);
   const res = await Promise.all(Object.values(q));
@@ -140,6 +144,8 @@ export async function loadRange(from, to) {
     recurring: r.recurring, recurringById: byId(r.recurring),
     areas: r.areas,
     hours: r.hours || DEFAULT_HOURS,
+    // "When a job runs past finish time": continue next working day (default) / ask / overtime
+    overflowMode: r.overflow?.overflow_mode || 'continue',
     from, to,
     patterns: r.patterns, patternDays: r.patternDays, personPatterns: r.personPatterns, dayHours: r.dayHours,
     workHours: makeHours({ patterns: r.patterns, patternDays: r.patternDays, personPatterns: r.personPatterns, dayHours: r.dayHours, settings: r.hours }),
@@ -411,6 +417,28 @@ export async function renderPlanner(main) {
     }, label, absence.notes ? h('span', { class: 'absence-note' }, absence.notes) : null);
   };
 
+  // ---- drag a job to another day / person: the whole job moves and re-flows (admin, week view)
+  let dragging = null;
+  const canDrag = (a) => admin && view === 'week' && !a.recurring_id;
+  const dropOn = async (p, iso) => {
+    const d = dragging; dragging = null;
+    document.querySelectorAll('.drop-ok').forEach((x) => x.classList.remove('drop-ok'));
+    if (!d || (d.a.person_id === p.id && d.iso === iso)) return;
+    const r = await moveWholeJob(ctx, d.a, { toDate: iso, personId: p.id, mode: data.overflowMode });
+    if (!r.ok) return;
+    const where = `${fmtDayShort(fromISO(iso))}${p.id !== d.a.person_id ? ` · ${p.name.split(' ')[0]}` : ''}`;
+    toast(r.parts && r.parts.length > 1 ? `Moved — ${splitText(r.parts)}.` : `Moved to ${where}.`, 'success', [
+      { label: 'Undo', onClick: async () => { if (await restoreJob(r.before, r.headId)) reload(); } },
+      { label: 'Edit', onClick: () => openWholeJob({ ctx, isoDays, personById, onSaved: reload, person: p }, r.headId) },
+    ]);
+    reload();
+  };
+  const dropAttrs = (p, iso) => (admin && view === 'week' ? {
+    ondragover: (e) => { if (!dragging) return; e.preventDefault(); e.dataTransfer.dropEffect = 'move'; e.currentTarget.classList.add('drop-ok'); },
+    ondragleave: (e) => e.currentTarget.classList.remove('drop-ok'),
+    ondrop: (e) => { e.preventDefault(); dropOn(p, iso); },
+  } : {});
+
   const chip = (a, person, absence, iso) => {
     const pump = ctx.pump(a);
     const task = data.taskById.get(a.task_id);
@@ -434,6 +462,9 @@ export async function renderPlanner(main) {
         equip ? `Equipment: ${ctx.equipmentLabel(equip.id)}` : null, a.recurring_id ? 'Recurring job' : null, a.notes,
         ...warnings.map((w) => `⚠ ${w}`), ...notes.map((w) => `⏰ ${w}`)].filter(Boolean).join('\n'),
       onclick: () => openJob(a, person),
+      draggable: canDrag(a) ? 'true' : false,
+      ondragstart: canDrag(a) ? (e) => { dragging = { a, iso }; e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', a.id); e.currentTarget.classList.add('dragging'); } : false,
+      ondragend: canDrag(a) ? (e) => { e.currentTarget.classList.remove('dragging'); setTimeout(() => { dragging = null; }, 0); } : false,
     },
       bg ? h('span', { class: 'bg-badge' }, h('span', { 'aria-hidden': 'true' }, '⏱'), ' Background') : null,
       time ? h('b', { class: 'chip-time chip-when' }, time) : null,
@@ -568,7 +599,7 @@ export async function renderPlanner(main) {
                 h('div', { class: 'person-name' }, p.name, p.active ? null : h('span', { class: 'tag tag-muted' }, 'inactive')),
                 p.job_title ? h('div', { class: 'muted small' }, p.job_title) : null,
               ),
-              isoDays.map((iso) => h('td', { class: `day-cell ${iso === todayISO ? 'is-today' : ''} ${ctx.hoursFor(p.id, iso).works ? '' : 'is-offday'}` }, cell(p, iso))),
+              isoDays.map((iso) => h('td', { class: `day-cell ${iso === todayISO ? 'is-today' : ''} ${ctx.hoursFor(p.id, iso).works ? '' : 'is-offday'}`, 'data-day': iso, ...dropAttrs(p, iso) }, cell(p, iso))),
             ))),
         ))
     : h('div', { class: 'empty' }, admin ? 'Add team members on the People page to start planning.' : 'No team members yet.');
@@ -858,10 +889,15 @@ async function copyLastWeek({ ctx, monday, rows, onDone }) {
   const prevFrom = toISO(addDays(monday, -7));
   const prevTo = toISO(addDays(monday, -3));
   const { data: prev, error } = await supabase.from('assignments')
-    .select('person_id, work_date, pump_model_id, any_pump, pump_mix, task_id, build_type_id, qty_target, notes, background, start_time, end_time, end_date, equipment_id, recurring_id')
+    .select('id, part_of, person_id, work_date, pump_model_id, any_pump, pump_mix, task_id, build_type_id, qty_target, notes, background, start_time, end_time, end_date, equipment_id, recurring_id')
     .gte('work_date', prevFrom).lte('work_date', prevTo).order('created_at');
   if (reportError(error, 'Loading last week')) return;
   if (!prev.length) { toast('Last week has nothing planned to copy.'); return; }
+  // Jobs over several days are copied as ONE job (from part 1), re-flowed with the person's hours
+  // next week — never part by part. Their continued parts are skipped here.
+  const ids = prev.map((a) => a.id);
+  const { data: kids } = ids.length ? await supabase.from('assignments').select('id, part_of').in('part_of', ids) : { data: [] };
+  const heads = new Set([...(kids || []).map((k) => k.part_of)]);
 
   const activePerson = new Set(rows.filter((p) => p.active).map((p) => p.id));
   const isActive = (map, id) => !id || map.get(id)?.active;
@@ -869,28 +905,41 @@ async function copyLastWeek({ ctx, monday, rows, onDone }) {
   let skippedAbsent = 0;
   let skippedInactive = 0;
   let skippedRecurring = 0;
+  const seriesToCopy = [];
   for (const a of prev) {
     if (a.recurring_id) { skippedRecurring++; continue; } // recurring jobs repeat by themselves
+    if (a.part_of) continue;                               // part 2, 3 … of a job: copied with part 1
     const date = toISO(addDays(fromISO(a.work_date), 7));
     if (!activePerson.has(a.person_id) || !isActive(ctx.modelById, a.pump_model_id)
         || !isActive(ctx.taskById, a.task_id) || !isActive(ctx.typeById, a.build_type_id)
         || !isActive(ctx.equipmentById, a.equipment_id)) { skippedInactive++; continue; }
+    if (heads.has(a.id)) { seriesToCopy.push(a); continue; }
     if (ctx.absenceOn(a.person_id, date)) { skippedAbsent++; continue; }
-    const { recurring_id: _r, ...rest } = a;
+    const { recurring_id: _r, id: _i, part_of: _p, ...rest } = a;
     copies.push({ ...rest, work_date: date, end_date: a.end_date ? toISO(addDays(fromISO(a.end_date), 7)) : null });
   }
 
-  const existing = ctx.assignments.filter((a) => a.work_date >= toISO(monday) && !a.recurring_id).length;
-  const parts = [`Copy ${copies.length} job${copies.length === 1 ? '' : 's'} from last week into this week (same people, days and quantities).`];
+  const existing = ctx.assignments.filter((a) => a.work_date >= toISO(monday) && !a.recurring_id && !a.part_of).length;
+  const n = copies.length + seriesToCopy.length;
+  const parts = [`Copy ${n} job${n === 1 ? '' : 's'} from last week into this week (same people, days and quantities).`];
+  if (seriesToCopy.length) parts.push(`${seriesToCopy.length} of them run over several days: each is copied as one job and continues on the person’s next working days.`);
   if (existing) parts.push(`This week already has ${existing} job${existing === 1 ? '' : 's'}; the copies are added alongside them.`);
   if (skippedRecurring) parts.push(`${skippedRecurring} recurring job${skippedRecurring === 1 ? ' is' : 's are'} not copied — they repeat by themselves.`);
   if (skippedAbsent) parts.push(`${skippedAbsent} skipped because the person is absent.`);
   if (skippedInactive) parts.push(`${skippedInactive} skipped because a person, pump model, task, build type or equipment is inactive.`);
-  if (!copies.length) { toast(parts.slice(1).join(' ') || 'Nothing to copy.'); return; }
+  if (!n) { toast(parts.slice(1).join(' ') || 'Nothing to copy.'); return; }
 
   if (!(await confirmDialog('Copy last week?', parts.join(' '), 'Copy', 'primary'))) return;
-  const { error: err } = await supabase.from('assignments').insert(copies);
-  if (reportError(err, 'Copying')) return;
-  toast(`Copied ${copies.length} job${copies.length === 1 ? '' : 's'}.`, 'success');
+  if (copies.length) {
+    const { error: err } = await supabase.from('assignments').insert(copies);
+    if (reportError(err, 'Copying')) return;
+  }
+  for (const head of seriesToCopy) {
+    const { rows, error: e1 } = await loadJobRows(head);
+    if (reportError(e1, 'Copying')) return;
+    const r = await copyWholeJob(ctx, rows, 7);
+    if (reportError(r.error, 'Copying')) return;
+  }
+  toast(`Copied ${n} job${n === 1 ? '' : 's'}.`, 'success');
   onDone();
 }

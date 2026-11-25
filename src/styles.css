@@ -1164,3 +1164,25 @@ details.dsec > summary .dsec-title::before { content: '▸'; font-size: .8rem; t
 @media print { .chip.chip-office { background: #eef1f5; } }
 .summary .stage-row td { background: color-mix(in srgb, var(--office-soft) 40%, transparent); color: var(--ink-2); }
 .sum-stage { white-space: nowrap; }
+
+/* =====================================================================
+   Jobs over several days, corrections
+   ===================================================================== */
+.toast-actions { flex-wrap: wrap; }
+.toast-links { white-space: nowrap; }
+.toast-link { background: none; border: 0; padding: 0 .1rem; font: inherit; font-weight: 700; color: inherit; text-decoration: underline; text-underline-offset: 3px; cursor: pointer; }
+.toast-link:focus-visible { outline: 2px solid currentColor; outline-offset: 2px; border-radius: 3px; }
+.parts-box { border: 1px dashed var(--line-2); border-radius: 10px; padding: .5rem .7rem; display: flex; flex-direction: column; gap: .3rem; }
+.parts-box .parts-total { font-weight: 650; }
+.parts-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: .2rem; font-size: .86rem; font-variant-numeric: tabular-nums; }
+.parts-list li { display: flex; align-items: center; gap: .5rem; flex-wrap: wrap; }
+.parts-list li.is-open { font-weight: 650; }
+.parts-list .lock { font-size: .75rem; color: var(--muted); }
+.chip[draggable="true"] { cursor: grab; }
+.chip.dragging { opacity: .45; }
+td.day-cell.drop-ok { outline: 2px dashed var(--brand); outline-offset: -3px; background: color-mix(in srgb, var(--brand) 6%, transparent); }
+.dc-logs li { display: flex; align-items: center; gap: .35rem; flex-wrap: wrap; }
+.dc-logs li.log-neg::before { content: '↺ '; color: var(--warn, #b45309); }
+.dc-logs .log-act { background: none; border: 0; padding: 0 .15rem; font: inherit; font-size: .75rem; color: var(--brand); text-decoration: underline; cursor: pointer; }
+.dc-logs .log-kind { font-size: .7rem; color: var(--muted); }
+.inline-row { display: flex; gap: .4rem; align-items: center; } .inline-row > input { flex: 1; min-width: 0; }

@@ -106,22 +106,29 @@ async function fillJob(pg) { await sel(dlg(pg).getByLabel('Task / operation'), '
   await dlg(pg).getByLabel('Start time').fill('16:00'); await dlg(pg).getByLabel('End time').fill('08:00'); await settle(pg, 150);
   ok(await dlg(pg).getByText('Pause for breaks').isHidden() && /runs through breaks/.test(await summary(pg)), 'background job: no "Pause for breaks"; runs through breaks');
   await pg.keyboard.press('Escape'); await settle(pg);
-  // ---- 3. past the finish: continue next working day (Fri → weekend → Mon absent → Tue)
-  await openAdd(pg, 'pI', 4); await fillJob(pg); await setWork(pg, '15:30', '2h');
-  sm = await summary(pg);
-  ok(/runs 1h past Irwin’s finish \(16:30\)/.test(sm), 'live check: "runs 1h past Irwin’s finish (16:30)"');
-  ok(await dlg(pg).getByRole('button', { name: 'Continue next working day' }).isVisible() && await dlg(pg).getByRole('button', { name: 'Keep as is (overtime)' }).isVisible() && await dlg(pg).getByRole('button', { name: 'Shorten to end of day' }).isVisible(), 'offers: continue next working day / keep as is (overtime) / shorten to end of day');
-  await dlg(pg).getByRole('button', { name: 'Continue next working day' }).click(); await settle(pg, 500);
+  // ---- 3. past the finish: continues on the next working day AUTOMATICALLY (Fri → weekend → Mon absent → Tue), no prompt
+  await openAdd(pg, 'pI', 4); await fillJob(pg); await setWork(pg, '15:30', '2h'); await settle(pg, 600);
   sm = await summary(pg);
   const nextTue = fmtShort(D(8));
-  ok(/continued over 2 working days ✓/.test(sm) && /15:30–16:30/.test(sm) && new RegExp(`${nextTue} 08:30–09:30`).test(sm), `split: Fri 15:30–16:30, then ${nextTue} 08:30–09:30 (weekend and Monday’s holiday skipped): ${sm}`);
-  await dlg(pg).locator('.modal-actions .btn-primary').click(); await settle(pg, 800); await closeAll(pg);
+  ok(/runs past finish — continues over 2 working days ✓/.test(sm) && /15:30–16:30/.test(sm) && new RegExp(`${nextTue} 08:30–09:30`).test(sm), `auto split shown in the form: Fri 15:30–16:30, then ${nextTue} 08:30–09:30 (weekend and Monday’s holiday skipped): ${sm}`);
+  ok(await dlg(pg).getByRole('button', { name: 'Continue next working day' }).count() === 0 && await dlg(pg).getByRole('button', { name: 'Keep on one day (overtime)' }).isVisible(), 'no prompt — only "Keep on one day (overtime)" to opt out');
+  await dlg(pg).locator('.modal-actions .btn-primary').click(); await settle(pg, 900);
+  ok(await pg.locator('dialog[open]').count() === 0, 'saved straight away (no "Save anyway?")');
+  const note = await pg.locator('.toast').last().textContent();
+  ok(new RegExp(`Split into 2 parts: Fri 15:30–16:30 → Tue 08:30–09:30`).test(note) && /Undo/.test(note) && /Edit/.test(note), 'notice: "Split into 2 parts: Fri 15:30–16:30 → Tue 08:30–09:30. Undo · Edit" — ' + note);
+  await closeAll(pg);
   const p1 = db.assignments.find((a) => a.person_id === 'pI' && a.work_date === D(4) && a.start_time === '15:30');
   const part2 = db.assignments.find((a) => a.part_of === p1?.id);
-  ok(p1 && p1.end_time === "16:30" && part2 && part2.work_date === D(8) && part2.start_time === "08:30" && part2.end_time === "09:30", 'saved as two parts; part 2 points at part 1');
+  ok(p1 && p1.end_time === "16:30" && p1.work_minutes === 120 && part2 && part2.work_date === D(8) && part2.start_time === "08:30" && part2.end_time === "09:30", 'saved as two parts; part 2 points at part 1; total work time (2h) on part 1');
   ok(/part 1 of 2/.test(await rowOf(pg, 'pI').locator('td.day-cell').nth(4).textContent()), 'chip shows "↪ part 1 of 2"');
-  // overtime
+  // Settings → Planner: "Ask me" brings back the choices
+  db.app_settings[0].overflow_mode = 'ask';
+  await pg.reload(); await pg.waitForSelector('.planner'); await settle(pg, 300);
   await openAdd(pg, 'pI', 1); await fillJob(pg); await setWork(pg, '15:30', '2h');
+  sm = await summary(pg);
+  ok(/runs 1h past Irwin’s finish \(16:30\)/.test(sm), '"Ask me": live check "runs 1h past Irwin’s finish (16:30)"');
+  ok(await dlg(pg).getByRole('button', { name: 'Continue next working day' }).isVisible() && await dlg(pg).getByRole('button', { name: 'Keep as is (overtime)' }).isVisible() && await dlg(pg).getByRole('button', { name: 'Shorten to end of day' }).isVisible(), '"Ask me" offers: continue next working day / keep as is (overtime) / shorten to end of day');
+  // overtime
   await dlg(pg).getByRole('button', { name: 'Keep as is (overtime)' }).click(); await settle(pg, 150);
   ok(/overtime 1h \(agreed\)/.test(await summary(pg)), 'keep as is: "overtime 1h (agreed)"');
   await dlg(pg).locator('.modal-actions .btn-primary').click(); await settle(pg, 700);

@@ -9,6 +9,9 @@ import { toISO, fromISO, addDays, today, fmtDayShort, fmtDayLong } from '../date
 import { placeOn, fmtMin, toMin, workDay, nextFree, fmtDur } from '../daytime.js';
 import { hoursText, makeHours } from '../hours.js';
 import { addWork, breakMinutes, workBetween, planWork, dayInfoFrom, parseDuration } from '../timing.js';
+import { planSeries, editJob, adjustPart, removePart, diffParts, partsOf, totalOf, sumWork } from '../series.js';
+import { isSeriesRow, loadJobRows, dayInfoFor, saveParts, restoreJob, splitText, pickShared } from '../jobSeries.js';
+import { belowZero } from '../demandModel.js';
 import { coverableNotes } from '../demandModel.js';
 import { noteText } from './demand.js';
 import { miniDay } from './dayTimeline.js';
@@ -127,9 +130,64 @@ async function loadTemplate(ctx, id) {
 }
 
 // ------------------------------------------------------------------ job form
-export function editAssignment({ ctx, person, iso, assignment, isoDays, personById, onSaved, copyFrom, times, prefill }) {
+/**
+ * Add / edit a job. A job over several days is ONE job: opening any of its parts opens
+ * the whole job (part 1's start, the total work time, all parts listed).
+ */
+export function editAssignment(args) {
+  const { ctx, assignment } = args;
+  if (assignment && !args.series && !assignment.recurring_id && isSeriesRow(ctx, assignment)) {
+    loadJobRows(assignment).then(({ rows, error }) => {
+      if (reportError(error, 'Opening the job') || !rows?.length) return;
+      editAssignment({ ...args, series: rows, openedId: assignment.id, assignment: rows.find((r) => !r.part_of) || rows[0] });
+    });
+    return;
+  }
+  editAssignmentForm(args);
+}
+
+/** Open the whole job (from a notice's "Edit"): loads it fresh first. */
+export async function openWholeJob(args, headId) {
+  const { rows, error } = await loadJobRows({ id: headId });
+  if (reportError(error, 'Opening the job') || !rows?.length) return;
+  const head = rows.find((r) => !r.part_of) || rows[0];
+  editAssignment({ ...args, assignment: head, iso: head.work_date, person: args.personById.get(head.person_id), series: rows.length > 1 ? rows : null });
+}
+
+/** "This part only / Whole job / Cancel" — resolves 'part' | 'job' | null. */
+function askPartOrJob(n, total) {
+  return new Promise((resolve) => {
+    let done = false;
+    const pick = (v) => () => { done = true; resolve(v); };
+    const { dialog } = openModal({
+      title: 'Delete job over several days',
+      body: h('p', {}, `This is part ${n} of ${total} of one job. Delete only this part (the other parts stay where they are), or the whole job?`),
+      actions: [
+        { label: 'Cancel', onClick: pick(null) },
+        { label: 'This part only', onClick: pick('part') },
+        { label: 'Whole job', variant: 'danger', onClick: pick('job') },
+      ],
+    });
+    dialog.addEventListener('close', () => { if (!done) resolve(null); });
+  });
+}
+
+function editAssignmentForm({ ctx, person, iso, assignment, isoDays, personById, onSaved, copyFrom, times, prefill, series = null, openedId = null }) {
   const src = assignment || copyFrom || (times || prefill ? { ...(prefill || {}), ...(times ? { start_time: times.start, end_time: times.end } : {}) } : null);
   const isNew = !assignment;
+  const formArgs = { ctx, isoDays, personById, onSaved };
+  // the person's working days for the live preview: from what's loaded at once, then their
+  // absences and one-off hours for the next weeks (fetched in the background; saving reloads them)
+  const fullDays = new Map();
+  const quickDays = (pid) => {
+    if (fullDays.has(pid)) return fullDays.get(pid) || dayInfoFrom((p, d) => ctx.hoursFor(p, d), (p, d) => Boolean(ctx.absenceOn(p, d)), pid);
+    fullDays.set(pid, null);
+    dayInfoFor(ctx, pid, isoDays?.[0] || iso || toISO(today())).then((di) => { fullDays.set(pid, di); if (formModal) refresh(); }).catch(() => {});
+    return dayInfoFrom((p, d) => ctx.hoursFor(p, d), (p, d) => Boolean(ctx.absenceOn(p, d)), pid);
+  };
+  const seriesParts = series && series.length > 1 ? partsOf(series) : null;
+  const seriesTotal = seriesParts ? totalOf(series, quickDays(assignment.person_id), assignment.pause_for_breaks !== false) : null;
+  const overflowMode = ctx.overflowMode || 'continue';
   const activePeople = [...personById.values()].filter((p) => p.active || p.id === person?.id);
 
   const personSel = h('select', {}, options(activePeople, person?.id),
@@ -152,8 +210,11 @@ export function editAssignment({ ctx, person, iso, assignment, isoDays, personBy
   const workDur = h('input', { type: 'text', placeholder: 'e.g. 1h 30m', 'aria-label': 'Work time', autocomplete: 'off' });
   const pauseBox = checkbox('Pause for breaks', src?.pause_for_breaks !== false);
   const summaryBox = h('div', { class: 'timing-summary', 'aria-live': 'polite' });
+  const partsBox = h('div', { class: 'parts-box', hidden: true, 'aria-live': 'polite' });
+  let formModal = null;
   let durMode = 'end';
-  let overtimeOK = false;      // "Keep as is (overtime)"
+  const overtimeDefault = overflowMode === 'overtime';
+  let overtimeOK = overtimeDefault;  // "Keep as is (overtime)" (Settings: "Allow overtime" makes it the default)
   let splitPlan = null;        // "Continue next working day": [{ date, start, end, work, paused }]
   let startTouched = Boolean(src?.start_time);
   const modeEnd = h('button', { type: 'button', class: 'seg-btn active', 'aria-pressed': 'true', onclick: () => setMode('end') }, 'End time');
@@ -212,7 +273,9 @@ export function editAssignment({ ctx, person, iso, assignment, isoDays, personBy
   const qtyField = field('Quantity target', qty, 'Units to complete — for testing tasks, the number of pumps on test.');
   const doneInp = h('input', { type: 'number', min: 0, step: 1, inputmode: 'numeric', value: assignment?.qty_done ?? '', 'aria-label': 'Units done' });
   const showDone = !isNew && 'qty_done' in (assignment || {});
-  const doneField = showDone ? field('Units done', doneInp, 'So far, e.g. 4 of 5 — counts towards the demand note it covers.') : null;
+  const doneClear = h('button', { type: 'button', class: 'btn btn-xs btn-ghost', title: 'Clear units done', onclick: () => { doneInp.value = ''; doneInp.focus(); } }, 'Clear');
+  const doneField = showDone ? field('Units done', doneInp, 'So far, e.g. 4 of 5 — counts once per job, towards the demand note it covers. Lower it or clear it to correct.') : null;
+  if (doneField) { const row = h('div', { class: 'inline-row' }); doneInp.replaceWith(row); row.append(doneInp, doneClear); }
   const qtyRow = h('div', { class: 'form-grid form-grid-2' }, qtyField, doneField);
   const equipField = field('Equipment / test station', equipSel);
   const notesField = field('Notes', notes);
@@ -268,7 +331,8 @@ export function editAssignment({ ctx, person, iso, assignment, isoDays, personBy
   /** The job(s) as they would be saved, for warnings. */
   const proposed = () => selectedDates().filter(Boolean).map((d, i) => {
     const t = timesFor(d);
-    const part = splitPlan && i === 0 ? splitPlan[0] : null;
+    const plan = !splitPlan && i === 0 ? planFor(d) : null;
+    const part = splitPlan && i === 0 ? splitPlan[0] : plan?.split ? plan.parts[0] : null;
     return {
       id: assignment?.id || `proposed-${i}`, person_id: personSel.value, task_id: taskSel.value, work_date: d,
       ...pumps.values(), qty_target: qty.value === '' ? null : Number(qty.value),
@@ -296,7 +360,19 @@ export function editAssignment({ ctx, person, iso, assignment, isoDays, personBy
     changed();
   }
   /** Any change to the timing invalidates an earlier choice (split / overtime). */
-  function changed() { splitPlan = null; overtimeOK = false; refresh(); }
+  function changed() { splitPlan = null; overtimeOK = overtimeDefault; refresh(); }
+
+  /** How the job will be laid out on day d: one part, or parts over working days. */
+  const planFor = (d) => {
+    const t = timesFor(d);
+    if (!d || t.s == null || t.e == null || t.bg || t.multi || !personSel.value) return null;
+    const total = t.work ?? workBetween(t.s, t.e, t.day?.breaks || [], t.pause);
+    const late = Boolean(t.day && t.e > t.day.we) || !t.day;
+    const split = !overtimeOK && (Boolean(splitPlan) || (late && overflowMode === 'continue') || Boolean(seriesParts));
+    if (!split) return { total, parts: [{ date: d, start: t.s, end: t.e }], split: false, late };
+    const parts = splitPlan || editJob({ current: seriesParts || [], date: d, start: t.s, total, pause: t.pause, dayInfo: quickDays(personSel.value) });
+    return { total, parts, split: parts.length > 1, late };
+  };
 
   /** "Continue next working day": spread the rest of the work over their next working days. */
   async function continueNextDay() {
@@ -350,7 +426,15 @@ export function editAssignment({ ctx, person, iso, assignment, isoDays, personBy
     } else {
       const early = t.s < day.ws;
       const late = t.e != null && t.e > day.we;
-      if (splitPlan) {
+      const plan = planFor(d);
+      if (plan?.split && !splitPlan) {
+        lines.push(h('p', { class: 'ts-line ts-ok' }, `${who} · ${seriesParts ? 'one job over' : late ? 'runs past finish — continues over' : 'over'} ${plan.parts.length} working days ✓`),
+          h('ul', { class: 'ts-parts' }, plan.parts.map((x) => h('li', {}, `${fmtDayShort(fromISO(x.date))} ${fmtMin(x.start)}–${fmtMin(x.end)}${x.locked ? ' 🔒' : ''}`))));
+        actions.push(h('button', { type: 'button', class: 'btn btn-xs', onclick: () => { overtimeOK = true; refresh(); } }, 'Keep on one day (overtime)'));
+      } else if (seriesParts && plan && !plan.split) {
+        lines.push(h('p', { class: 'ts-line ts-ok' }, `${who} · ${dayName} ${span}${brk} · ${late ? 'kept on one day (overtime)' : 'fits in one day'} — the other part${seriesParts.length > 2 ? 's' : ''} will be removed`));
+        if (overtimeOK && late) actions.push(h('button', { type: 'button', class: 'btn btn-xs btn-ghost', onclick: () => { overtimeOK = false; refresh(); } }, 'Continue next working day instead'));
+      } else if (splitPlan) {
         lines.push(h('p', { class: 'ts-line ts-ok' }, `${who} · continued over ${splitPlan.length} working days ✓`),
           h('ul', { class: 'ts-parts' }, splitPlan.map((x) => h('li', {}, `${fmtDayShort(fromISO(x.date))} ${fmtMin(x.start)}–${fmtMin(x.end)}${x.paused ? ` (incl. ${x.paused} min break)` : ''}`))));
         actions.push(h('button', { type: 'button', class: 'btn btn-xs', onclick: () => { splitPlan = null; endTime.value = t.e != null ? endText(timesFor(d).e) : endTime.value; refresh(); } }, 'Undo'));
@@ -360,9 +444,9 @@ export function editAssignment({ ctx, person, iso, assignment, isoDays, personBy
           h('button', { type: 'button', class: 'btn btn-xs btn-primary', onclick: continueNextDay }, 'Continue next working day'),
           h('button', { type: 'button', class: 'btn btn-xs', onclick: () => { overtimeOK = true; refresh(); } }, 'Keep as is (overtime)'),
           h('button', { type: 'button', class: 'btn btn-xs', onclick: () => { setMode('end'); endTime.value = fmtMin(day.we); changed(); } }, 'Shorten to end of day'));
-      } else if (late && overtimeOK) {
-        lines.push(h('p', { class: 'ts-line ts-ot' }, `${who} · ${dayName} ${span}${brk} · overtime ${fmtDur(t.e - day.we)} (agreed)`));
-        actions.push(h('button', { type: 'button', class: 'btn btn-xs btn-ghost', onclick: () => { overtimeOK = false; refresh(); } }, 'Undo'));
+      } else if (late && overtimeOK && !seriesParts) {
+        lines.push(h('p', { class: 'ts-line ts-ot' }, `${who} · ${dayName} ${span}${brk} · overtime ${fmtDur(t.e - day.we)}${overtimeDefault ? ' (Settings: allow overtime)' : ' (agreed)'}`));
+        actions.push(h('button', { type: 'button', class: 'btn btn-xs btn-ghost', onclick: () => { overtimeOK = false; if (overflowMode !== 'continue') continueNextDay(); else refresh(); } }, overtimeDefault ? 'Continue next working day' : 'Undo'));
       }
       if (early) {
         lines.push(h('p', { class: 'ts-line ts-warn' }, `⚠ Starts before ${who}’s start (${fmtMin(day.ws)})`));
@@ -373,12 +457,70 @@ export function editAssignment({ ctx, person, iso, assignment, isoDays, personBy
           changed();
         } }, `Move to ${fmtMin(day.ws)}`));
       }
-      if (!late && !early && !splitPlan) {
+      if (!late && !early && !splitPlan && !seriesParts) {
         lines.push(h('p', { class: 'ts-line ts-ok' }, `${who} · ${dayName} ${span}${brk}${t.auto === 'slot' ? ' (until their next job)' : t.auto ? ` (to the end of ${who}’s day)` : ''} · within hours ✓`));
       }
-      if (durMode === 'work' && t.e != null && !splitPlan) lines.push(h('p', { class: 'ts-end' }, `Ends ${endText(t.e)}${t.paused ? ` (incl. ${t.paused} min break)` : ''}`));
+      if (durMode === 'work' && t.e != null && !splitPlan && !planFor(d)?.split) lines.push(h('p', { class: 'ts-end' }, `Ends ${endText(t.e)}${t.paused ? ` (incl. ${t.paused} min break)` : ''}`));
     }
     mount(summaryBox, lines, actions.length ? h('div', { class: 'ts-actions' }, actions) : null);
+  }
+
+  /** "Total work time: 3h · Part 1 Tue 15:00–16:30 · Part 2 Wed 08:30–10:00", each with "Adjust this part only". */
+  function renderParts() {
+    if (!seriesParts) { partsBox.hidden = true; return; }
+    partsBox.hidden = false;
+    const day = (x) => fmtDayShort(fromISO(x.date));
+    mount(partsBox,
+      h('div', { class: 'parts-total' }, `One job over ${seriesParts.length} days · total work time ${fmtDur(seriesTotal)}`),
+      h('ol', { class: 'parts-list', 'aria-label': 'Parts of this job' }, seriesParts.map((x, i) => h('li', { class: x.id === openedId ? 'is-open' : '' },
+        `Part ${i + 1} · ${day(x)} ${fmtMin(x.start)}–${fmtMin(x.end)}`, x.locked ? h('span', { class: 'lock', title: 'Times set by hand — kept when the job re-flows' }, '🔒 set by hand') : null,
+        x.id === openedId ? h('span', { class: 'muted small' }, '(opened)') : null,
+        h('button', { type: 'button', class: 'btn btn-xs btn-ghost', onclick: () => adjustThisPart(i) }, 'Adjust this part only')))),
+      h('p', { class: 'muted small' }, 'Changes here apply to the whole job: it re-flows from part 1 with the person’s hours (work time = the total). Moving the start date moves every part.'));
+  }
+
+  /** "Adjust this part only": new times for one part; the following parts re-flow (or are locked). */
+  function adjustThisPart(index) {
+    const x = seriesParts[index];
+    const st = h('input', { type: 'time', step: 300, value: fmtMin(x.start), 'aria-label': 'Start' });
+    const en = h('input', { type: 'time', step: 300, value: fmtMin(x.end), 'aria-label': 'End' });
+    const reflow = h('input', { type: 'radio', name: 'follow', value: 'reflow', checked: true });
+    const lock = h('input', { type: 'radio', name: 'follow', value: 'lock' });
+    const err = h('p', { class: 'form-error', role: 'alert' });
+    const later = seriesParts.length - index - 1;
+    openModal({
+      title: `Adjust part ${index + 1} of ${seriesParts.length} · ${fmtDayShort(fromISO(x.date))}`,
+      body: h('div', { class: 'stack' },
+        h('div', { class: 'form-grid form-grid-2' }, field('Start', st), field('End', en)),
+        later ? h('fieldset', { class: 'skills-fieldset' }, h('legend', {}, `The following part${later > 1 ? 's' : ''}`),
+          h('label', { class: 'check' }, reflow, h('span', {}, 'Re-flow to keep the total work time')),
+          h('label', { class: 'check' }, lock, h('span', {}, 'Lock them where they are (the total changes)'))) : null,
+        h('p', { class: 'muted small' }, 'This part keeps these times when the job re-flows later (🔒).'),
+        err),
+      actions: [{ label: 'Cancel' }, {
+        label: 'Save this part', variant: 'primary',
+        onClick: async () => {
+          if (!st.value || !en.value || toMin(en.value) <= toMin(st.value)) { err.textContent = 'Enter a start and an end later than the start.'; return false; }
+          const { rows: before, error: e0 } = await loadJobRows(assignment);
+          if (reportError(e0, 'Saving')) return false;
+          const head = before.find((r) => !r.part_of) || before[0];
+          const pause = head.pause_for_breaks !== false;
+          const dayInfo = await dayInfoFor(ctx, head.person_id, before[0].work_date);
+          const cur = partsOf(before);
+          const i = cur.findIndex((c) => c.date === x.date);
+          if (i < 0) { err.textContent = 'This part has changed — close and open the job again.'; return false; }
+          const res = adjustPart({ current: cur, index: i, start: toMin(st.value), end: toMin(en.value), mode: lock.checked ? 'lock' : 'reflow', total: totalOf(before, dayInfo, pause), pause, dayInfo });
+          const { rows, remove } = diffParts(before, res.parts, { ...pickShared(head), qty_done: head.qty_done ?? null }, { total: res.total });
+          const out = await saveParts({ rows, remove });
+          if (reportError(out.error, 'Saving')) return false;
+          formModal?.close();
+          toast(`Part ${index + 1} adjusted${res.parts.length !== cur.length ? ` — the job now has ${res.parts.length} part${res.parts.length === 1 ? '' : 's'}` : ''}.`, 'success',
+            [{ label: 'Undo', onClick: async () => { if (await restoreJob(before, out.headId)) onSaved(); } }]);
+          onSaved();
+          return true;
+        },
+      }],
+    });
   }
 
   const capacityWarnings = () => {
@@ -400,6 +542,7 @@ export function editAssignment({ ctx, person, iso, assignment, isoDays, personBy
   };
 
   const refresh = () => {
+    renderParts();
     setBgOptions();
     pumps.rebuild();
     rebuildDemand();
@@ -441,7 +584,7 @@ export function editAssignment({ ctx, person, iso, assignment, isoDays, personBy
       for (const job of proposed()) {
         const asSaved = { ...job, background: bgSel.value === '' ? null : bgSel.value === 'true' };
         // within-hours checks are shown live in the timing summary; "Outside hours" only needs confirming if not agreed
-        if (ctx.hoursWarnings) for (const m of ctx.hoursWarnings(asSaved, p.name, job.work_date)) if (!msgs.includes(m) && !((overtimeOK || splitPlan) && /^Outside/.test(m))) msgs.push(m);
+        if (ctx.hoursWarnings) for (const m of ctx.hoursWarnings(asSaved, p.name, job.work_date)) if (!msgs.includes(m) && !((overtimeOK || splitPlan || planFor(job.work_date)?.split) && /^Outside/.test(m))) msgs.push(m);
         if (ctx.breakNotes) for (const m of ctx.breakNotes(asSaved, p.name, job.work_date)) if (!notes.includes(m)) notes.push(m);
         if (!job.task_id) continue;
         for (const m of ctx.clashWarnings(job, personById)) if (!msgs.includes(m)) msgs.push(m);
@@ -545,6 +688,11 @@ export function editAssignment({ ctx, person, iso, assignment, isoDays, personBy
       if (d != null && (!Number.isInteger(d) || d < 0)) { error.textContent = 'Units done must be a whole number (0 or more).'; return false; }
       if (d != null && values.qty_target != null && d > values.qty_target
           && !(await confirmDialog('More than planned?', `${d} done, but the job is for ${values.qty_target}. Save anyway?`, 'Save anyway', 'primary'))) return false;
+      // lowering it can't take the note's completed units below 0 (after negative corrections)
+      const note = (demandSel?.value || src?.demand_id) && ctx.demand?.items?.find((x) => x.note.id === (demandSel?.value || src?.demand_id));
+      const drop = (d ?? 0) - (assignment?.qty_done ?? 0);
+      const below = note && drop < 0 ? belowZero(note.state, [{ taskId: task.id, delta: drop }]) : null;
+      if (below) { error.textContent = below; return false; }
       values.qty_done = d;
     }
     if (todoSel && (todoSel.value || src?.todo_id)) values.todo_id = isOffice() ? todoSel.value || null : null;
@@ -570,22 +718,46 @@ export function editAssignment({ ctx, person, iso, assignment, isoDays, personBy
     }
 
     const rowsToSave = proposed().map((j) => ({ ...values, end_time: j.end_time, work_date: j.work_date, end_date: j.end_date }));
-    // continued on the next working day(s): parts 2, 3 … point at part 1
-    const saveParts = async (firstId) => {
-      const more = extraParts().map((x) => ({ ...values, work_date: x.date, end_date: null, start_time: fmtMin(x.start), end_time: fmtMin(x.end), part_of: firstId }));
-      if (!more.length) return true;
-      const { error: err } = await supabase.from('assignments').insert(more);
-      return !reportError(err, 'Saving the next day');
-    };
-    if (isNew) {
-      if (extraParts().length) {
-        const { data: one, error: err } = await supabase.from('assignments').insert(rowsToSave[0]).select('id').single();
-        if (reportError(err, 'Saving')) return false;
-        if (!(await saveParts(one.id))) return false;
-        toast(`Saved over ${splitPlan.length} working days.`, 'success');
-        onSaved();
-        return true;
+
+    // Attended jobs with times that run over several working days (or already do) are saved as
+    // ONE job: its parts re-flow from the first start and re-use the job's rows — never duplicates.
+    const flowable = !multiDay.input.checked && !isBgNow() && Boolean(startTime.value) && !assignment?.recurring_id && !rep.pattern;
+    const plans = flowable ? dates.map(planFor) : [];
+    if (flowable && plans.every(Boolean) && (plans.some((x) => x.split) || seriesParts)) {
+      const shared = { ...values };
+      delete shared.start_time; delete shared.end_time;
+      const fresh = isNew ? { rows: [] } : await loadJobRows(assignment);   // always the job as saved now
+      if (reportError(fresh.error, 'Saving')) return false;
+      const before = fresh.rows || [];
+      const made = [];
+      for (const [i, d] of dates.entries()) {
+        const plan = plans[i];
+        const t = timesFor(d);
+        let parts = plan.parts;
+        if (plan.split || (!isNew && before.length > 1 && !overtimeOK)) {
+          if (splitPlan && i === 0) parts = splitPlan;
+          else {
+            const dayInfo = await dayInfoFor(ctx, values.person_id, d);
+            parts = editJob({ current: isNew ? [] : partsOf(before), date: d, start: t.s, total: plan.total, pause: t.pause, dayInfo });
+          }
+        }
+        const { rows, remove } = diffParts(isNew ? [] : before, parts, shared, { total: plan.total });
+        const out = await saveParts({ rows, remove });
+        if (reportError(out.error, 'Saving')) return false;
+        made.push({ parts, headId: out.headId });
       }
+      const m = made[0];
+      const msg = made.length > 1 ? `Added to ${made.length} days (each job that runs past finish continues on the next working day).`
+        : m.parts.length > 1 ? `${splitText(m.parts)}.` : before.length > 1 ? 'Saved — now fits in one day.' : 'Saved.';
+      toast(msg, 'success', made.length === 1 ? [
+        { label: 'Undo', onClick: async () => { if (await restoreJob(before, m.headId)) onSaved(); } },
+        { label: 'Edit', onClick: () => openWholeJob({ ...formArgs, person }, m.headId) },
+      ] : null);
+      onSaved();
+      return true;
+    }
+
+    if (isNew) {
       const { error: err } = await supabase.from('assignments').insert(rowsToSave);
       if (reportError(err, 'Saving')) return false;
       toast(dates.length > 1 ? `Added to ${dates.length} days.` : 'Saved.', 'success');
@@ -603,8 +775,7 @@ export function editAssignment({ ctx, person, iso, assignment, isoDays, personBy
     }
     const { error: err } = await supabase.from('assignments').update(rowsToSave[0]).eq('id', assignment.id);
     if (reportError(err, 'Saving')) return false;
-    if (!(await saveParts(assignment.part_of || assignment.id))) return false;
-    toast(extraParts().length ? `Saved over ${splitPlan.length} working days.` : 'Saved.', 'success');
+    toast('Saved.', 'success');
     onSaved();
     return true;
   };
@@ -623,10 +794,36 @@ export function editAssignment({ ctx, person, iso, assignment, isoDays, personBy
           onSaved();
           return true;
         }
+        if (seriesParts) {
+          const opened = Math.max(0, seriesParts.findIndex((x) => x.id === (openedId || assignment.id)));
+          const choice = await askPartOrJob(opened + 1, seriesParts.length);
+          if (!choice) return false;
+          const { rows: before, error: e0 } = await loadJobRows(assignment);
+          if (reportError(e0, 'Deleting')) return false;
+          const head = before.find((r) => !r.part_of) || before[0];
+          let headId = null;
+          if (choice === 'job') {
+            const { error: err } = await supabase.from('assignments').delete().eq('id', head.id);   // its parts go with it
+            if (reportError(err, 'Deleting')) return false;
+          } else {
+            const cur = partsOf(before);
+            const idx = cur.findIndex((x) => x.id === (openedId || assignment.id));
+            const dayInfo = await dayInfoFor(ctx, head.person_id, before[0].work_date);
+            const res = removePart({ current: cur, index: idx < 0 ? opened : idx, pause: head.pause_for_breaks !== false, dayInfo });
+            const { rows, remove } = diffParts(before, res.parts, { ...pickShared(head), qty_done: head.qty_done ?? null }, { total: res.total });
+            const out = await saveParts({ rows, remove });
+            if (reportError(out.error, 'Deleting')) return false;
+            headId = out.headId;
+          }
+          toast(choice === 'job' ? 'Deleted the whole job.' : 'Deleted this part.', 'success',
+            [{ label: 'Undo', onClick: async () => { if (await restoreJob(before, headId)) onSaved(); } }]);
+          onSaved();
+          return true;
+        }
         if (!(await confirmDialog('Delete this job?', 'Remove it from the plan? (The change history keeps a record.)'))) return false;
         const { error: err } = await supabase.from('assignments').delete().eq('id', assignment.id);
         if (reportError(err, 'Deleting')) return false;
-        toast('Deleted.', 'success');
+        toast('Deleted.', 'success', [{ label: 'Undo', onClick: async () => { if (await restoreJob([assignment], null)) onSaved(); } }]);
         onSaved();
         return true;
       },
@@ -642,6 +839,7 @@ export function editAssignment({ ctx, person, iso, assignment, isoDays, personBy
             start_time: startTime.value || null, end_time: endTime.value || null,
             background: bgSel.value === '' ? null : bgSel.value === 'true', equipment_id: equipSel.value || null,
             work_date: dateInput.value, end_date: endDate.value || null,
+            _total: seriesTotal ?? (durMode === 'work' ? parseDuration(workDur.value) : null),
           },
         }), 0);
         return true;
@@ -650,10 +848,10 @@ export function editAssignment({ ctx, person, iso, assignment, isoDays, personBy
   }
   actions.push({ label: 'Cancel' }, { label: isNew ? 'Add' : 'Save', variant: 'primary', onClick: save });
 
-  openModal({
-    title: isNew ? (copyFrom ? 'Duplicate job' : 'Add work') : assignment.recurring_id ? '🔁 Edit recurring job' : 'Edit job',
+  formModal = openModal({
+    title: isNew ? (copyFrom ? 'Duplicate job' : 'Add work') : assignment.recurring_id ? '🔁 Edit recurring job' : seriesParts ? `Edit job · over ${seriesParts.length} days` : 'Edit job',
     body: h('div', { class: 'stack' },
-      h('div', { class: 'form-grid form-grid-2' }, field('Person', personSel), isNew ? null : field('Date', dateInput)),
+      h('div', { class: 'form-grid form-grid-2' }, field('Person', personSel), isNew ? null : field(seriesParts ? 'Starts on' : 'Date', dateInput, seriesParts ? 'Moving it moves every part' : undefined)),
       isNew ? h('fieldset', { class: 'skills-fieldset' },
         h('legend', {}, copyFrom ? 'Copy to day(s) this week' : 'Day(s) this week'),
         h('div', { class: 'day-checks' }, dayBoxes.map((b) => b.el)),
@@ -671,6 +869,7 @@ export function editAssignment({ ctx, person, iso, assignment, isoDays, personBy
           h('div', { class: 'field' }, h('div', { class: 'seg seg-sm', role: 'group', 'aria-label': 'Set the end by' }, modeEnd, modeWork), endField, workField),
           h('div', { class: 'field timing-checks' }, pauseBox.el, multiDay.el)),
         endDateBox,
+        partsBox,
         summaryBox,
         timeHint,
         miniBox,
@@ -685,6 +884,14 @@ export function editAssignment({ ctx, person, iso, assignment, isoDays, personBy
     ),
     actions,
   });
+  const initWork = seriesTotal ?? copyFrom?._total ?? null;
+  if (initWork != null) {
+    durMode = 'work';
+    workDur.value = fmtDur(initWork).replace(/ /g, ' ');
+    endField.hidden = true; workField.hidden = false;
+    modeWork.classList.add('active'); modeEnd.classList.remove('active');
+    modeWork.setAttribute('aria-pressed', 'true'); modeEnd.setAttribute('aria-pressed', 'false');
+  }
   refresh();
   (isNew && !copyFrom ? taskSel : qty).focus();
 }
