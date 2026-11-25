@@ -50,7 +50,7 @@ const HOURS_FMT = '0.00';
 
 export async function buildWorkbook(data, { from, to, title }) {
   const wb = new ExcelJS.Workbook();
-  wb.creator = 'Meditec Pump Room Planner';
+  wb.creator = 'Meditec Production Room Planning';
   wb.created = new Date();
   wb.title = title;
 

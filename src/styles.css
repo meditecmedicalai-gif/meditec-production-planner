@@ -1,5 +1,5 @@
 /* =====================================================================
-   Meditec Pump Room Planner — design system
+   Meditec Production Room Planning — design system
    Brand: Meditec purple #7C1874. Warm paper backgrounds, serif headings
    (Fraunces) + Inter for UI. Light / dark via <html data-theme>.
    All text colour pairs meet WCAG AA (≥ 4.5:1).
@@ -122,7 +122,7 @@ a { color: var(--accent); }
 
 .app-shell.collapsed .brand, .app-shell.collapsed .brand-sub, .app-shell.collapsed .mainnav a span,
 .app-shell.collapsed .nav-count, .app-shell.collapsed .hours, .app-shell.collapsed .live span, .app-shell.collapsed .me .who,
-.app-shell.collapsed .side-actions .signout { display: none; }
+.app-shell.collapsed .side-actions .signout, .app-shell.collapsed .credit { display: none; }
 .app-shell.collapsed .brand-mini { display: grid; }
 .app-shell.collapsed .mainnav a { justify-content: center; padding: 10px; }
 .app-shell.collapsed .me { justify-content: center; padding: 6px; }
@@ -272,6 +272,11 @@ textarea { resize: vertical; }
 .login-card .lead { color: var(--muted); margin: 0 0 24px; }
 .login-logo { width: 190px; display: none; margin-bottom: 18px; }
 .login-card .foot { margin-top: 22px; font-size: .84rem; color: var(--muted); }
+/* small, subtle credit line (login card + sidebar footer) */
+.credit { margin: 0; font-size: 11px; letter-spacing: .02em; color: var(--muted); opacity: .75; }
+.login-card .credit { margin-top: 14px; text-align: center; }
+.side-foot .credit { padding: 0 8px; }
+@media print { .credit { display: none; } }
 .login .theme-toggle { position: absolute; top: 18px; right: 18px; }
 
 /* ---------------------------------------------------------------- Today (dashboard) */

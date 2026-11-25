@@ -103,7 +103,7 @@ function sidebar(path) {
   return h('aside', { class: 'sidebar', 'aria-label': 'Main navigation' },
     h('a', { class: 'brand', href: `#${DEFAULT_ROUTE}` }, logo('brand-logo'), h('span', { class: 'brand-word' }, 'Meditec')),
     h('span', { class: 'brand-mini', 'aria-hidden': 'true' }, 'M'),
-    h('span', { class: 'brand-sub' }, 'Pump Room Planner'),
+    h('span', { class: 'brand-sub', title: 'Meditec Production Room Planning' }, 'Production Room Planning'),
     h('nav', { class: 'mainnav' }, navLinks(path)),
     h('div', { class: 'side-foot' },
       hours,
@@ -124,6 +124,7 @@ function sidebar(path) {
           },
         }, icon('chevron')),
       ),
+      h('p', { class: 'credit' }, 'Built by Prince Tony'),
     ),
   );
 }
@@ -188,7 +189,7 @@ async function render() {
     mount(main, h('div', { class: 'card' }, 'This page is for administrators only.'));
     return;
   }
-  document.title = `${route.label} · Pump Room Planner`;
+  document.title = `${route.label} · Production Room Planning`;
   await route.render(main, pageCtx());
   main.dataset.loaded = '1';
 }

@@ -533,7 +533,7 @@ export async function renderPlanner(main) {
 
   const printHeader = h('div', { class: 'print-only print-header' },
     h('div', {},
-      h('div', { class: 'print-title' }, view === 'day' ? `Pump Room Day Plan — ${fmtDayLong(fromISO(viewDay))}` : `Pump Room Plan — ${weekLabel}`),
+      h('div', { class: 'print-title' }, view === 'day' ? `Production Room Planning — Day plan ${fmtDayLong(fromISO(viewDay))}` : `Meditec Production Room Planning — ${weekLabel}`),
       hours ? h('div', { class: 'print-sub' },
         `Hours ${hhmm(hours.work_start)}–${hhmm(hours.work_end)} · Break ${hhmm(hours.break_time)} · Lunch ${hhmm(hours.lunch_time)}${view === 'day' ? ' · green = free time' : ''}`) : null,
     ),

@@ -68,8 +68,8 @@ export async function openExport({ weekMonday = null } = {}) {
           const [data, demand, todos, xlsx] = await Promise.all([loadRange(from.value, to.value), loadDemand(), loadTodos(), import('../exportXlsx.js')]);
           if (data.error) throw data.error;
           const rows = exportRows(makeCtx(data), { from: from.value, to: to.value, personIds, demand: demand.error ? null : demand, todos: todos.ready ? todos : null });
-          const name = `Pump room plan ${from.value} to ${to.value}.xlsx`;
-          const wb = await xlsx.buildWorkbook(rows, { from: from.value, to: to.value, title: `Pump room plan ${from.value} to ${to.value}` });
+          const name = `Production Room Planning ${from.value} to ${to.value}.xlsx`;
+          const wb = await xlsx.buildWorkbook(rows, { from: from.value, to: to.value, title: `Meditec Production Room Planning ${from.value} to ${to.value}` });
           await xlsx.downloadWorkbook(wb, name);
           toast(`Downloaded “${name}”.`, 'success');
           return true;
