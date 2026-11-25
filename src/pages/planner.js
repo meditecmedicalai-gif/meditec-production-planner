@@ -4,7 +4,7 @@ import { auth } from '../auth.js';
 import { demandPanel } from './demand.js';
 import { loadSummaryDemand, summaryCard } from './summary.js';
 import { isBackground, coversDay, endDateOf, timeLabel, clashes, hm, pumpLabel, ABSENCE_TYPES } from '../jobs.js';
-import { capacityConfig, capacityForDay, level, stationMismatch, occupancyText } from '../capacity.js';
+import { capacityConfig, capacityForDay, level, stationMismatch, occupancyText, equipmentShared } from '../capacity.js';
 import { occupancySvg, occupancyPopover } from './occupancy.js';
 import { describe as describeRepeat, matches as repeatMatches } from '../recurring.js';
 import { editAssignment, editTemplate, deleteTemplate, saveTemplateTimes } from './jobEditor.js';
@@ -86,7 +86,7 @@ export async function loadRange(from, to) {
       return r1.error ? run(JOB_COLUMNS) : r1;
     })(),
     absences: supabase.from('absences').select('id, person_id, start_date, end_date, absence_type, notes').lte('start_date', to).gte('end_date', from),
-    equipment: supabase.from('equipment').select('id, name, notes, active, sort_order, test_area_id').order('sort_order').order('name'),
+    equipment: supabase.from('equipment').select('*').order('sort_order').order('name'),
     areas: supabase.from('test_areas').select('*').order('sort_order').order('name'),
     limits: supabase.from('test_limits').select('id, test_area_id, name, max_pumps, active, sort_order').order('sort_order').order('name'),
     limitModels: supabase.from('test_limit_models').select('test_limit_id, pump_model_id'),
@@ -244,9 +244,21 @@ export function makeCtx(data) {
       if (!capCache.has(iso)) capCache.set(iso, capacityForDay(data.assignments, capCfg, iso));
       return capCache.get(iso);
     },
+    /** Can several jobs use this equipment at once? (shared test area / "Can be shared") */
+    equipmentShared(id) {
+      return equipmentShared(data.equipmentById.get(id), data.capacity);
+    },
+    /** "Quality Check (shared — up to 7 pumps)", "Medicare / Mediflex test bench (one at a time)", "Test rig 1". */
+    equipmentLabel(id) {
+      const eq = data.equipmentById.get(id);
+      if (!eq) return null;
+      const area = eq.test_area_id && data.capacity.areaById.get(eq.test_area_id);
+      if (area) return `${eq.name} (${area.capacity_mode === 'sequential' ? 'one at a time' : `shared — up to ${area.max_pumps} pumps`})`;
+      return eq.shareable ? `${eq.name} (can be shared)` : eq.name;
+    },
     /** Equipment / person time clashes against the loaded week, as messages. */
     clashWarnings(a, personById) {
-      const c = clashes(a, data.assignments, data.taskById);
+      const c = clashes(a, data.assignments, data.taskById, { isShared: (id) => this.equipmentShared(id) });
       const out = [];
       for (const o of c.equipment) {
         out.push(`${data.equipmentById.get(a.equipment_id)?.name || 'Equipment'} is also booked for ${personById.get(o.person_id)?.name || 'someone'} (${fmtDayShort(fromISO(o.work_date))}${o.start_time ? ' ' + hm(o.start_time) : ''}).`);
@@ -409,7 +421,7 @@ export async function renderPlanner(main) {
       class: `chip ${bg ? 'chip-bg' : 'chip-att'} ${continuing ? 'chip-cont' : ''} ${warnings.length ? 'chip-warn' : ''} ${notes.length ? 'chip-note' : ''} ${a.any_pump ? 'chip-any' : ''}`,
       style: type ? `--type-color:${type.color}` : false,
       title: [label, bg ? 'Runs in the background (unattended)' : 'Attended — the person works on this', time,
-        equip ? `Equipment: ${equip.name}` : null, a.recurring_id ? 'Recurring job' : null, a.notes,
+        equip ? `Equipment: ${ctx.equipmentLabel(equip.id)}` : null, a.recurring_id ? 'Recurring job' : null, a.notes,
         ...warnings.map((w) => `⚠ ${w}`), ...notes.map((w) => `⏰ ${w}`)].filter(Boolean).join('\n'),
       onclick: () => openJob(a, person),
     },

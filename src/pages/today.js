@@ -523,15 +523,18 @@ function todayTimeline({ now, todayISO, hours, weekend }) {
     const task = now.taskById.get(a.task_id);
     const type = now.typeById.get(a.build_type_id);
     const tc = type ? typeColour(type.color) : 'var(--muted-c)';
-    const warn = now.warningsFor(a, '').length > 0;
+    const person = now.people.find((p) => p.id === a.person_id);
+    // same warnings as the planner: training, wrong station, double-booked equipment (not shared areas), person clashes
+    const warns = [...now.warningsFor(a, person?.name || ''), ...now.clashWarnings(a, new Map(now.people.map((p) => [p.id, p])))];
+    const warn = warns.length > 0;
     const tl = timeLabel(a, todayISO);
     const tip = [
       [now.pump(a), type?.name, task?.name].filter(Boolean).join(' · '),
       a.qty_target != null ? `Quantity: ${a.qty_target}` : null,
       tl || (extraCls.includes('untimed') ? 'No set time' : null),
       extraCls.includes('bgjob') ? '⏱ Runs in the background' : null,
-      a.equipment_id ? `Equipment: ${now.equipmentById.get(a.equipment_id)?.name}` : null,
-      warn ? '⚠ Not trained on this pump model' : null,
+      a.equipment_id ? `Equipment: ${now.equipmentLabel ? now.equipmentLabel(a.equipment_id) : now.equipmentById.get(a.equipment_id)?.name}` : null,
+      ...warns.map((w) => `⚠ ${w}`),
       a.notes,
     ].filter(Boolean).join('\n');
     return h('a', {

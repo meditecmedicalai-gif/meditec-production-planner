@@ -86,17 +86,20 @@ export function timeSummary(job) {
 
 /**
  * Other jobs that clash with `job`:
- *  - equipment: same equipment at overlapping times (any person, any kind)
+ *  - equipment: same equipment at overlapping times (any person, any kind) —
+ *               except equipment that can be shared (opts.isShared), e.g. the
+ *               Quality Check area, where several jobs at once are normal
  *  - person:    same person, both attended (not background), both with a
  *               start time, overlapping times
  */
-export function clashes(job, others, taskById) {
+export function clashes(job, others, taskById, { isShared = () => false } = {}) {
   const eq = [];
+  const shared = job.equipment_id && isShared(job.equipment_id);
   const person = [];
   const bg = isBackground(job, taskById.get(job.task_id));
   for (const o of others) {
     if (o.id && o.id === job.id) continue;
-    if (job.equipment_id && o.equipment_id === job.equipment_id && overlaps(job, o)) eq.push(o);
+    if (job.equipment_id && !shared && o.equipment_id === job.equipment_id && overlaps(job, o)) eq.push(o);
     if (!bg && o.person_id === job.person_id && job.start_time && o.start_time
         && !isBackground(o, taskById.get(o.task_id)) && overlaps(job, o)) person.push(o);
   }
