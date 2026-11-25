@@ -7,7 +7,8 @@ function seed() {
     .map((n,i)=>({id:uid(),name:n,requires_pump:i<6,counts_as_output:n==='Final assembly',is_background:false,active:true,sort_order:(i+1)*10}));
   tasks.push({ id: uid(), name: 'Soak / burn-in test', requires_pump: true, counts_as_output: false, is_background: true, active: true, sort_order: 35 });
   tasks.push({ id: uid(), name: 'Quality testing', requires_pump: true, counts_as_output: false, is_background: false, active: true, sort_order: 36 });
-  for (const t of tasks) { t.is_testing = ['Functional test / calibration', 'Quality testing', 'Soak / burn-in test'].includes(t.name); t.allows_any_pump = t.name === 'Repair'; }
+  for (const [i, n] of ['Documentation', 'Odoo / ERP', 'Meetings', 'Admin / Email'].entries()) tasks.push({ id: uid(), name: n, requires_pump: false, counts_as_output: false, is_background: false, active: true, sort_order: 900 + i, category: 'office' });
+  for (const t of tasks) { t.is_testing = ['Functional test / calibration', 'Quality testing', 'Soak / burn-in test'].includes(t.name); t.allows_any_pump = t.name === 'Repair'; t.category = t.category || 'production'; }
   tasks.sort((a, b) => a.sort_order - b.sort_order);
   const equipment = [['Quality Check','areaMain',5],['Medicare / Mediflex test bench','areaMM',6],['Test rig 1',null,10],['Test rig 2',null,20],['Soak rack',null,30]].map(([n,a,o])=>({ id: n === 'Quality Check' ? 'eqQC' : n.startsWith('Medicare') ? 'eqMM' : uid(), name: n, notes: null, test_area_id: a, active: true, sort_order: o }));
   const build_types = [['Production','#475569'],['Trial','#b45309'],['Rental','#7c3aed'],['Customer','#0369a1']].map(([n,c],i)=>({id:uid(),name:n,color:c,is_default:i===0,active:true,sort_order:(i+1)*10}));
@@ -20,7 +21,7 @@ function seed() {
   const work_patterns = [{ id: 'patStd', name: 'Standard', is_default: true, notes: 'Default working hours', active: true, sort_order: 10 }];
   const work_pattern_days = [1, 2, 3, 4, 5, 6, 7].map((w) => ({ pattern_id: 'patStd', weekday: w, works: w <= 5, start_time: w <= 5 ? '08:30:00' : null, end_time: w <= 5 ? '16:30:00' : null,
     break_time: w <= 5 ? '10:30:00' : null, break_minutes: w <= 5 ? 15 : 0, lunch_time: w <= 5 ? '12:30:00' : null, lunch_minutes: w <= 5 ? 30 : 0 }));
-  return { work_patterns, work_pattern_days, person_work_patterns: [], person_day_hours: [], test_areas, test_limits, test_limit_models, test_area_shared_tasks, recurring_jobs: [], recurring_exceptions: [], pump_models: models, tasks, build_types, people: [], person_skills: [], assignments: [], absences: [], demand_notes: [], audit_log: [], equipment,
+  return { todos: [], pump_model_stages: [], demand_progress: [], demand_stage_plans: [], work_patterns, work_pattern_days, person_work_patterns: [], person_day_hours: [], test_areas, test_limits, test_limit_models, test_area_shared_tasks, recurring_jobs: [], recurring_exceptions: [], pump_models: models, tasks, build_types, people: [], person_skills: [], assignments: [], absences: [], demand_notes: [], audit_log: [], equipment,
     app_settings: [{id:1,work_start:'08:30:00',work_end:'16:30:00',break_time:'10:30:00',break_minutes:15,lunch_time:'12:30:00',lunch_minutes:30,max_pumps_on_test:7}] };
 }
 function filt(rows, params) {
@@ -74,6 +75,11 @@ module.exports = function makeHandler(role, db) {
       if (m === 'DELETE') return json(204);                       // RLS: silently 0 rows
       if (m === 'PATCH') { const hit = filt(rows, params).filter(r => r.created_by === 'u1'); const body = JSON.parse(req.postData());
         for (const r of hit) Object.assign(r, body, { updated_by: 'u1', updated_at: new Date().toISOString() }); return json(204); }
+    } else if (table === 'todos' && role !== 'admin' && m !== 'GET' && m !== 'HEAD') {
+      // viewer rules for to-dos (mirror RLS): add in her own name; edit her own or ones for her; never delete
+      if (m === 'DELETE') return json(204);
+      if (m === 'PATCH') { const hit = filt(rows, params).filter(r => r.created_by === 'u1' || r.owner_id === 'u1'); const body = JSON.parse(req.postData());
+        for (const r of hit) Object.assign(r, body, { updated_by: 'u1', updated_at: new Date().toISOString() }); return json(204); }
     } else if (m !== 'GET' && m !== 'HEAD' && role !== 'admin') return json(403, { code:'42501', message:'new row violates row-level security policy' });
     if (m === 'HEAD') { const n = filt(rows, params).length; return rt.fulfill({ status: 200, headers: { 'content-range': `0-${Math.max(n-1,0)}/${n}`, 'access-control-expose-headers': 'Content-Range', 'access-control-allow-origin': '*' }, body: '' }); }
     if (m === 'GET') { let r = sort(filt(rows, params), u.searchParams.get('order'));
@@ -88,7 +94,9 @@ module.exports = function makeHandler(role, db) {
       }
       for (const b of body) { if (b.name && rows.some(r => r.name === b.name)) return json(409, { code:'23505', message:'duplicate key' }); }
       const now = new Date(Date.now() + seq).toISOString();
-      const created = body.map(b => ({ id: uid(), active: true, created_at: now, ...(table === 'demand_notes' ? { created_by: 'u1', updated_by: 'u1', updated_at: now } : {}), ...b }));
+      const created = body.map(b => ({ id: uid(), active: true, created_at: now, ...(table === 'demand_notes' ? { created_by: 'u1', updated_by: 'u1', updated_at: now } : {}),
+        ...(table === 'todos' ? { created_by: 'u1', owner_id: 'u1', status: 'todo', priority: 'normal', checklist: [], updated_at: now } : {}),
+        ...(table === 'demand_progress' ? { created_by: 'u1' } : {}), ...b }));
       if (table === 'assignments') for (const a of created) { if (a.end_time && !a.start_time) return json(400, { code: '23514', message: 'violates check constraint' });
         const t = db.tasks.find(t => t.id === a.task_id);
         a.any_pump = !!a.any_pump; a.recurring_id = a.recurring_id ?? null; a.recurring_detached = !!a.recurring_detached;
@@ -101,6 +109,7 @@ module.exports = function makeHandler(role, db) {
       for (const b of Object.values(body)) {} for (const r of hit) Object.assign(r, body, table === 'demand_notes' ? { updated_by: 'u1', updated_at: new Date().toISOString() } : {}); return json(204); }
     if (m === 'DELETE') { const hit = filt(rows, params);
       for (const r of hit) { if (db.assignments.some(a => a.person_id === r.id || a.pump_model_id === r.id || a.task_id === r.id)) return json(409, { code:'23503', message:'violates foreign key constraint' }); }
+      if (table === 'todos') for (const a of db.assignments) if (hit.some(r => r.id === a.todo_id)) a.todo_id = null;
       db[table] = rows.filter(r => !hit.includes(r)); return json(204); }
   };
 };

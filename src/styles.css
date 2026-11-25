@@ -1096,3 +1096,66 @@ details.dsec > summary .dsec-title::before { content: '▸'; font-size: .8rem; t
 .ico-partly { display: inline-block; width: .8em; height: .8em; border-radius: 50%; border: 2px solid currentColor; background: linear-gradient(90deg, currentColor 50%, transparent 50%); margin-right: .1em; vertical-align: -.05em; }
 .dpanel-title .ico-partly { margin-right: .35em; }
 .filter-check { display: flex; flex-wrap: wrap; gap: .4rem 1rem; align-items: center; }
+
+/* =====================================================================
+   Office work, to-dos, stages, completed units
+   ===================================================================== */
+:root { --office: #5B6B82; --office-soft: #E7ECF3; }
+:root[data-theme="dark"] { --office: #9DB0CC; --office-soft: #233041; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --office: #9DB0CC; --office-soft: #233041; } }
+/* office jobs: neutral blue-grey with 💻, so office time stands out from floor work */
+.chip.chip-office { --type-color: var(--office); background: var(--office-soft); border-color: color-mix(in srgb, var(--office) 45%, var(--line)); border-left: 5px solid var(--office); }
+.chip-office .chip-task { font-weight: 650; color: var(--office); }
+.chip-office-ico { font-size: .85rem; }
+.dt-job.dt-office { --type-color: var(--office); background: var(--office-soft); border-left-color: var(--office); border-color: color-mix(in srgb, var(--office) 45%, var(--line)); }
+.pill-office { background: var(--office-soft); color: var(--office); }
+.chip-done { font-weight: 700; color: var(--ok); }
+.todo-tag { color: var(--office); background: var(--office-soft); }
+.notes-top textarea { font-size: 1rem; border-color: color-mix(in srgb, var(--office) 40%, var(--line)); background: color-mix(in srgb, var(--office-soft) 50%, var(--card)); }
+
+/* two-colour bars: done = solid, planned-not-done = lighter */
+.dc-bar { position: relative; }
+.dc-bar span { position: absolute; left: 0; top: 0; bottom: 0; display: block; height: auto; border-radius: inherit; }
+.dc-bar .bar-planned { background: color-mix(in srgb, var(--info) 35%, var(--card)); }
+.dc-bar .bar-done { background: var(--ok); }
+.dc-planned .dc-pl { text-decoration: underline dotted; text-underline-offset: 3px; cursor: help; }
+.dc-stages { list-style: none; margin: 0; padding: .35rem .6rem; border-radius: 9px; border: 1px dashed var(--line-2); display: flex; flex-direction: column; gap: .2rem; }
+.dc-stages li { display: grid; grid-template-columns: minmax(7rem, 13rem) minmax(60px, 160px) auto; align-items: center; gap: .6rem; font-size: .8rem; }
+.dc-stages .dc-bar { height: 6px; min-width: 60px; }
+.dc-stages li.is-last .st-name { font-weight: 700; }
+.st-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ink-2); }
+.st-num { font-variant-numeric: tabular-nums; color: var(--ink-2); white-space: nowrap; }
+.st-done { color: var(--ok); font-weight: 650; }
+.dc-logs { list-style: none; margin: 0; padding: 0; font-size: .78rem; color: var(--ink-2); display: flex; flex-direction: column; gap: .1rem; font-variant-numeric: tabular-nums; }
+.dc-logs li::before { content: '✓ '; color: var(--ok); }
+.plan-table input { width: 6rem; }
+
+/* tabs + to-dos */
+.demand-tabs { margin: 0 0 .7rem; }
+.demand-tabs .seg-btn { border: 0; background: none; font: inherit; cursor: pointer; font-weight: 600; }
+.demand-tabs .seg-btn.active { background: var(--card); }
+.part-title { margin: 1.2rem 0 .2rem; font-size: 1.2rem; }
+.tcard { border-left-color: var(--office) !important; }
+.tcard.td-done { opacity: .62; }
+.todo-ico { color: var(--office); font-size: 1.1rem; }
+.tstat { font-size: .72rem; font-weight: 700; padding: 0 .5rem; border-radius: 99px; white-space: nowrap; }
+.tstat-todo { background: var(--office-soft); color: var(--office); } .tstat-in_progress { background: var(--info-soft); color: var(--info); } .tstat-done { background: var(--ok-soft); color: var(--ok); }
+.td-check { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: .15rem; font-size: .88rem; }
+.td-done { text-decoration: line-through; color: var(--muted); }
+.tsec-todo { color: var(--office); } .tsec-in_progress { color: var(--info); } .tsec-done { color: var(--muted); }
+.r-2d { grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); }
+.my-todos .btn { margin-top: .5rem; }
+
+/* settings: stages */
+.stage-list { margin: 0; padding-left: 1.4rem; display: flex; flex-direction: column; gap: .3rem; }
+.stage-list li { display: flex; justify-content: space-between; align-items: center; gap: .5rem; }
+.stage-name { display: inline-flex; gap: .4rem; align-items: center; font-weight: 600; }
+
+@media (max-width: 760px) {
+  .r-2d { grid-template-columns: minmax(0, 1fr); }
+  .dc-stages li { grid-template-columns: minmax(0, 1fr) auto; }
+  .dc-stages li .dc-bar { grid-column: 1 / -1; grid-row: 2; }
+}
+@media print { .chip.chip-office { background: #eef1f5; } }
+.summary .stage-row td { background: color-mix(in srgb, var(--office-soft) 40%, transparent); color: var(--ink-2); }
+.sum-stage { white-space: nowrap; }

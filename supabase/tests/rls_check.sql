@@ -7,7 +7,7 @@
 -- The whole check is ONE statement. At the end it deliberately stops
 -- with an "error" whose message is the report:
 --
---     RLS CHECK FINISHED: 138 passed, 0 failed ...
+--     RLS CHECK FINISHED: 162 passed, 0 failed ...
 --
 -- Raising that error is what undoes every bit of test data, so nothing
 -- is left behind. Every line should start with PASS.
@@ -40,6 +40,11 @@ declare
   qc_mode  text;
   st_names text;
   probs    text[] := '{}';
+  free_task uuid;  -- a task that needs no pump (by rule, not name)
+  out_task  uuid;  -- a task that counts as output
+  todo_a    uuid;  -- a to-do added by the admin
+  todo_v    uuid;  -- a to-do added by the viewer
+  st_task   uuid;  -- a stage task
   pid3 uuid;
   pid2 uuid;
   passed int;
@@ -78,12 +83,12 @@ begin
   from unnest(array['assignments','absences','demand_notes','people','person_skills','pump_models','tasks','build_types',
                     'equipment','app_settings','test_areas','test_area_shared_tasks','test_limits','test_limit_models',
                     'recurring_jobs','recurring_exceptions','work_patterns','work_pattern_days','person_work_patterns',
-                    'person_day_hours']) as tb
+                    'person_day_hours','todos','pump_model_stages','demand_progress','demand_stage_plans']) as tb
   where not coalesce((select puballtables from pg_publication where pubname = 'supabase_realtime'), false)
     and not exists (select 1 from pg_publication_tables p where p.pubname = 'supabase_realtime' and p.schemaname = 'public' and p.tablename = tb);
   res := res || case when missing is null
-    then 'PASS  setup   live updates enabled for all 20 planning tables'
-    else 'FAIL  setup   live updates missing for: ' || missing || ' (run 005 and 008, or Dashboard → Database → Publications → supabase_realtime)' end;
+    then 'PASS  setup   live updates enabled for all 24 planning tables'
+    else 'FAIL  setup   live updates missing for: ' || missing || ' (run 005, 008 and 012, or Dashboard → Database → Publications → supabase_realtime)' end;
   res := res || format('%s  setup   test areas, limits and recurring jobs exist (005 migration run)',
     case when to_regclass('public.recurring_jobs') is not null and to_regclass('public.test_limits') is not null then 'PASS' else 'FAIL' end);
   res := res || format('%s  setup   change log (audit_log) is never sent as a live update',
@@ -165,7 +170,7 @@ begin
                 case when mm_name is null then '' else format(' "%s"', mm_name) end, array_to_string(probs, '; ')) end;
   res := res || format('%s  setup   MATS and Bari-Med 1 have no limit group (count towards Quality Check only)',
     case when exists (select 1 from public.test_limit_models x join public.pump_models m on m.id = x.pump_model_id
-                      where m.name in ('MediAir Turn Sense (MATS)', 'Bari-Med 1')) then 'FAIL' else 'PASS' end);
+                      where m.name ilike '%turn sense%' or m.name ilike '%(mats)%' or m.name ilike 'bari%med%') then 'FAIL' else 'PASS' end);
   res := res || format('%s  setup   work patterns exist with exactly one default, 7 weekdays each (008 migration run)',
     case when to_regclass('public.person_day_hours') is not null
           and (select count(*) from public.work_patterns where is_default) = 1
@@ -192,6 +197,39 @@ begin
   res := res || format('%s  setup   people can be linked to a login (people.user_id)',
     case when exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'people' and column_name = 'user_id')
          then 'PASS' else 'FAIL' end);
+  select id into free_task from public.tasks where not requires_pump order by (category = 'production') desc, sort_order limit 1;
+  select id into out_task from public.tasks where counts_as_output order by sort_order limit 1;
+
+  -- 012: office work, to-dos, stages, completed units, manual planned — checked by rule, not names
+  probs := '{}';
+  if not exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'tasks' and column_name = 'category') then
+    probs := probs || 'tasks have no category column — run migration 012'::text;
+  elsif not exists (select 1 from public.tasks where category = 'office' and active) then
+    probs := probs || 'no active office task (Settings → Tasks → Category: Office)'::text;
+  else
+    select string_agg(name, ', ') into mm_tasks from public.tasks where category = 'office' and (requires_pump or counts_as_output or coalesce(is_testing, false));
+    if mm_tasks is not null then probs := probs || format('office tasks must not need a pump, count as output or be testing: %s', mm_tasks); end if;
+  end if;
+  res := res || case when cardinality(probs) = 0
+    then format('PASS  setup   office tasks: %s', (select string_agg(name, ', ' order by sort_order) from public.tasks where category = 'office' and active))
+    else 'FAIL  setup   office work: ' || array_to_string(probs, '; ') end;
+  res := res || case
+    when to_regclass('public.todos') is null or to_regclass('public.demand_progress') is null or to_regclass('public.demand_stage_plans') is null
+         or not exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'assignments' and column_name = 'qty_done')
+         or not exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'assignments' and column_name = 'todo_id')
+      then 'FAIL  setup   to-dos, units done, logged progress and manual planned are missing — run migration 012'
+    else 'PASS  setup   to-dos, units done, logged progress and manual planned quantities exist (012 migration run)' end;
+  select string_agg(m.name, ', ' order by m.sort_order) into st_names from public.pump_models m
+  where m.active and not exists (select 1 from public.pump_model_stages s where s.pump_model_id = m.id);
+  res := res || case
+    when to_regclass('public.pump_model_stages') is null then 'FAIL  setup   production stages table missing — run migration 012'
+    when st_names is null then 'PASS  setup   every active pump model has production stages'
+    when out_task is not null then format('PASS  setup   pump models without stages use the "counts as output" task(s) instead: %s (set stages in Settings → Pump models → Stages)', st_names)
+    else format('FAIL  setup   no stages and no "counts as output" task for: %s — set stages in Settings → Pump models → Stages', st_names) end;
+  res := res || case when exists (select 1 from public.demand_notes where status_override in ('planned', 'partly'))
+    then format('FAIL  setup   %s demand note(s) still have a hand-set Planned status (run migration 012)', (select count(*) from public.demand_notes where status_override in ('planned', 'partly')))
+    else 'PASS  setup   no hand-set "Planned" statuses left — planned is worked out from jobs + manual quantities' end;
+
   res := res || format('%s  setup   viewer e-mail found (%s)', case when viewer_id is null then 'FAIL' else 'PASS' end, viewer_email);
   res := res || format('%s  setup   admin e-mail found (%s)',  case when admin_id  is null then 'FAIL' else 'PASS' end, admin_email);
 
@@ -199,6 +237,7 @@ begin
   -- someone else's note to try (and fail) to edit. Rolled back at the end.
   if admin_id is not null then
     insert into public.demand_notes (quantity, comment, created_by) values (1, 'RLS test: admin note', admin_id);
+    insert into public.todos (title, owner_id, created_by) values ('RLS test: admin to-do', admin_id, admin_id) returning id into todo_a;
   end if;
 
   -- ------------------------------------------------------------- viewer
@@ -365,7 +404,7 @@ begin
 
     -- Demand notes: create, edit own, mark done, no delete
     insert into public.demand_notes (quantity, comment, build_type_id, pump_model_id, needed_by, priority)
-    values (10, 'RLS test note', (select id from public.build_types where name = 'Trial'),
+    values (10, 'RLS test note', (select id from public.build_types where not is_default order by sort_order limit 1),
             (select id from public.pump_models order by sort_order limit 1), current_date + 7, 'high')
     returning id into note_id;
     res := res || format('%s  viewer  can create demand note', case when note_id is not null then 'PASS' else 'FAIL' end);
@@ -406,6 +445,40 @@ begin
       res := res || format('%s  viewer  cannot override the status of others'' notes', case when n = 0 then 'PASS' else 'FAIL' end);
     end if;
 
+    -- To-dos: see all, add (also for someone else), edit own, never delete
+    select count(*) into n from public.todos;
+    res := res || format('%s  viewer  can see to-dos', case when n > 0 then 'PASS' else 'FAIL' end);
+    insert into public.todos (title, owner_id, checklist) values ('RLS test: to-do for the admin', admin_id, '[{"text":"a","done":false}]') returning id into todo_v;
+    res := res || format('%s  viewer  can add a to-do for someone else', case when todo_v is not null then 'PASS' else 'FAIL' end);
+    update public.todos set status = 'in_progress', checklist = '[{"text":"a","done":true}]' where id = todo_v;
+    get diagnostics n = row_count;
+    res := res || format('%s  viewer  can edit a to-do she added', case when n = 1 then 'PASS' else 'FAIL' end);
+    update public.todos set title = 'hacked' where id = todo_a;
+    get diagnostics n = row_count;
+    res := res || format('%s  viewer  cannot edit others'' to-dos', case when n = 0 then 'PASS' else 'FAIL' end);
+    delete from public.todos where id = todo_v;
+    get diagnostics n = row_count;
+    res := res || format('%s  viewer  cannot delete a to-do (even her own)', case when n = 0 then 'PASS' else 'FAIL' end);
+    -- Progress: sees it, can't record it
+    begin
+      insert into public.demand_progress (demand_id, qty) values ((select id from public.demand_notes limit 1), 1);
+      ok := false;
+    exception when insufficient_privilege then ok := true;
+    end;
+    res := res || format('%s  viewer  cannot log completed units on a note', case when ok then 'PASS' else 'FAIL' end);
+    begin
+      insert into public.demand_stage_plans (demand_id, task_id, qty) values ((select id from public.demand_notes limit 1), out_task, 5);
+      ok := false;
+    exception when insufficient_privilege or not_null_violation then ok := true;
+    end;
+    res := res || format('%s  viewer  cannot enter manual planned quantities', case when ok then 'PASS' else 'FAIL' end);
+    update public.assignments set qty_done = 1;
+    get diagnostics n = row_count;
+    res := res || format('%s  viewer  cannot record units done on jobs', case when n = 0 then 'PASS' else 'FAIL' end);
+    delete from public.pump_model_stages;
+    get diagnostics n = row_count;
+    res := res || format('%s  viewer  cannot change production stages', case when n = 0 then 'PASS' else 'FAIL' end);
+
     execute 'reset role';
   end if;
 
@@ -433,7 +506,7 @@ begin
       res := res || 'PASS  admin   can add pump models'::text;
 
       insert into public.assignments (person_id, work_date, task_id, qty_target)
-      values (pid, current_date, (select id from public.tasks where name = 'Training'), 0);
+      values (pid, current_date, free_task, 0);
       select count(*) into n from public.audit_log
       where table_name = 'assignments' and changed_by = auth.uid() and changed_at >= now();
       res := res || format('%s  admin   assignment change written to audit log', case when n >= 1 then 'PASS' else 'FAIL' end);
@@ -491,7 +564,7 @@ begin
 
       begin
         insert into public.assignments (person_id, work_date, task_id, end_time)
-        values (pid, current_date, (select id from public.tasks where name = 'Training'), '12:00');
+        values (pid, current_date, free_task, '12:00');
         ok := false;
       exception when check_violation then ok := true;
       end;
@@ -499,7 +572,7 @@ begin
 
       begin
         insert into public.assignments (person_id, work_date, task_id, end_date)
-        values (pid, current_date, (select id from public.tasks where name = 'Training'), current_date - 1);
+        values (pid, current_date, free_task, current_date - 1);
         ok := false;
       exception when check_violation then ok := true;
       end;
@@ -531,7 +604,7 @@ begin
       -- Recurring: every working day for 14 days, one removed date, one absent day
       insert into public.people (name) values ('RLS repeat person') returning id into pid2;
       insert into public.recurring_jobs (title, person_id, task_id, pattern, start_date, end_date)
-      values ('RLS repeat', pid2, (select id from public.tasks where name = 'Training'), 'workdays', current_date, current_date + 13);
+      values ('RLS repeat', pid2, free_task, 'workdays', current_date, current_date + 13);
       insert into public.recurring_exceptions (recurring_id, skip_date)
       select id, (select d from generate_series(current_date, current_date + 13, interval '1 day') d
                   where extract(isodow from d) <= 5 order by d limit 1)::date
@@ -559,7 +632,7 @@ begin
       where extract(isodow from d) <= 4 order by d limit 1;
       res := res || 'PASS  admin   can assign a pattern (with an override) and add a one-off day change'::text;
       insert into public.recurring_jobs (title, person_id, task_id, pattern, start_date, end_date)
-      values ('RLS part-time repeat', pid3, (select id from public.tasks where name = 'Training'), 'workdays', current_date, current_date + 13);
+      values ('RLS part-time repeat', pid3, free_task, 'workdays', current_date, current_date + 13);
       perform public.extend_recurring_jobs(current_date + 30);
       select count(*) into n from public.assignments a join public.recurring_jobs r on r.id = a.recurring_id where r.title = 'RLS part-time repeat';
       res := res || format('%s  admin   recurring skips non-working days: 10 working days − 2 Fridays − 1 day off = 7 jobs (got %s)',
@@ -571,17 +644,40 @@ begin
       -- Demand: a job covers a note; deleting the note only unlinks the job
       insert into public.demand_notes (quantity, comment, pump_model_id) values (4, 'RLS demand link', (select id from public.pump_models order by sort_order limit 1)) returning id into other_note;
       insert into public.assignments (person_id, work_date, task_id, pump_model_id, build_type_id, qty_target, demand_id)
-      values (pid3, current_date, (select id from public.tasks where name = 'Final assembly'), (select id from public.pump_models order by sort_order limit 1),
+      values (pid3, current_date, out_task, (select id from public.pump_models order by sort_order limit 1),
               (select id from public.build_types where is_default), 4, other_note) returning id into pid2;
       delete from public.demand_notes where id = other_note;
       select count(*) into n from public.assignments where id = pid2 and demand_id is null;
       res := res || format('%s  admin   job linked to a demand note; deleting the note keeps the job (unlinked)', case when n = 1 then 'PASS' else 'FAIL' end);
 
+      -- 012: stages, units done, logged completed, manual planned, to-do links — all in the change log
+      select id into st_task from public.tasks where category = 'production' and requires_pump order by sort_order limit 1;
+      insert into public.pump_model_stages (pump_model_id, task_id, position)
+      values ((select id from public.pump_models order by sort_order limit 1), st_task, 99) on conflict do nothing;
+      insert into public.demand_notes (quantity, comment, pump_model_id) values (10, 'RLS progress', (select id from public.pump_models order by sort_order limit 1)) returning id into other_note;
+      insert into public.assignments (person_id, work_date, task_id, pump_model_id, build_type_id, qty_target, qty_done, demand_id)
+      values (pid3, current_date, out_task, (select id from public.pump_models order by sort_order limit 1), (select id from public.build_types where is_default), 5, 2, other_note)
+      returning id into pid2;
+      update public.assignments set qty_done = 4 where id = pid2;
+      insert into public.demand_progress (demand_id, task_id, qty, note) values (other_note, out_task, 3, 'RLS log');
+      insert into public.demand_stage_plans (demand_id, task_id, qty) values (other_note, out_task, 6);
+      update public.demand_stage_plans set qty = 7 where demand_id = other_note and task_id = out_task;
+      res := res || 'PASS  admin   can set stages, record units done, log completed units and enter manual planned'::text;
+      select count(*) into n from public.audit_log where changed_at >= now() and (
+        (table_name = 'assignments' and record_id = pid2 and action = 'update' and old_data ->> 'qty_done' = '2' and new_data ->> 'qty_done' = '4')
+        or table_name in ('demand_progress', 'demand_stage_plans', 'pump_model_stages'));
+      res := res || format('%s  admin   units done, logged completed, manual planned and stage changes written to the change log', case when n >= 4 then 'PASS' else 'FAIL' end);
+      insert into public.todos (title) values ('RLS to-do link') returning id into todo_v;
+      update public.assignments set todo_id = todo_v where id = pid2;
+      delete from public.todos where id = todo_v;
+      select count(*) into n from public.assignments where id = pid2 and todo_id is null;
+      res := res || format('%s  admin   job scheduled for a to-do; deleting the to-do keeps the job (unlinked)', case when n = 1 then 'PASS' else 'FAIL' end);
+
       -- A job continued on the next working day: deleting part 1 removes its parts
       insert into public.assignments (person_id, work_date, task_id, start_time, end_time)
-      values (pid3, current_date, (select id from public.tasks where name = 'Training'), '13:00', '14:30') returning id into note_id;
+      values (pid3, current_date, free_task, '13:00', '14:30') returning id into note_id;
       insert into public.assignments (person_id, work_date, task_id, start_time, end_time, part_of)
-      values (pid3, current_date + 1, (select id from public.tasks where name = 'Training'), '07:00', '08:00', note_id);
+      values (pid3, current_date + 1, free_task, '07:00', '08:00', note_id);
       delete from public.assignments where id = note_id;
       select count(*) into n from public.assignments where part_of = note_id;
       res := res || format('%s  admin   job split over two days: deleting part 1 deletes part 2; pause for breaks is on by default',

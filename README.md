@@ -48,7 +48,11 @@ Live site (once deployed): `https://meditecmedicalai-gif.github.io/meditec-produ
    [`supabase/tests/check_multiday_jobs.sql`](supabase/tests/check_multiday_jobs.sql) to review jobs whose
    "Ends on" looks like a mistake. Then [`010_shared_equipment.sql`](supabase/migrations/010_shared_equipment.sql)
    (the "Can be shared" setting for equipment), then [`011_demand_links.sql`](supabase/migrations/011_demand_links.sql)
-   (jobs linked to demand notes; automatic note status with an override).
+   (jobs linked to demand notes; automatic note status with an override), then
+   [`012_office_todos_stages.sql`](supabase/migrations/012_office_todos_stages.sql) (office / non-production tasks,
+   to-dos, production stages per pump model, completed units, manual planned quantities). Its one-off set-up runs
+   only the first time; afterwards run [`supabase/tests/report_012.sql`](supabase/tests/report_012.sql) to see the
+   office tasks, the stages per model and **how many notes went back to automatic** (hand-set *Planned*).
 
 ### 3. Lock down sign-in
 1. **Authentication → Sign In / Providers** (called *Providers* in some versions):
@@ -157,11 +161,13 @@ Everyone lands on **Today** after signing in:
 - key numbers: units planned this week, open demand, overdue notes, people off today (click to jump);
 - **This week at a glance** in plain English ("38 pumps planned against 65 needed by Friday…") with a
   planned-vs-needed chart per pump model;
-- **From the floor**: newest open demand notes;
+- **Demand — most urgent** and, next to it, **My to-dos** (your top 5 not done, overdue first; needs your login
+  linked to a person for scheduling) with *+ New to-do*;
+- the glance card says how many units are **completed · still to do** by Friday;
 - charts for build-type mix, the eight-week trend, jobs per person (striped = background) and equipment
   hours booked — click any chart to open the week planner;
 - **Who's free now**: every person with their status, using **their own hours** — *Free* (until when), *Busy*
-  (what, until when), *On break / On lunch*, *Not started yet*, *Finished for the day*, *Not working* or
+  (what, until when), **Office** for office work ("Meetings: Weekly ops review until 11:30"), *On break / On lunch*, *Not started yet*, *Finished for the day*, *Not working* or
   *Absent* — updating with the clock; and **Free later today**, each person's next free slot;
 - the **shift bar** shows the signed-in person's own hours when their login is linked to them (People → Edit →
   *Linked login*), otherwise the default pattern;
@@ -228,8 +234,8 @@ Pumps are tested several at a time, so the planner adds up the pumps on test tha
   instead of 8/1 (hover or tab to it for "8 pumps · ~15 min each"), and only **overlapping jobs** on the bench are flagged.
 - Capacity pills always fit their own day column: they wrap onto two lines rather than spill into the next day, and
   the occupancy graph sits on its own line. `npm run test:layout` checks this at 1280 / 1440 / 1920 px and on a phone,
-  in light and dark mode, `npm run test:timing` checks job timing, `npm run test:shared` checks shared stations and `npm run test:demand`
-  checks demand linked to jobs
+  in light and dark mode, `npm run test:timing` checks job timing, `npm run test:shared` checks shared stations, `npm run test:demand`
+  checks demand linked to jobs and `npm run test:office` checks office work, to-dos, stages and completed units
   (all need Playwright:
   `npm i -D playwright && npx playwright install chromium`).
 - **Occupancy graph**: hover (or tab to) a Quality Check pill in the capacity row to see pumps on test across the
@@ -340,16 +346,20 @@ Under *Timing & equipment* in the job form:
 **Export to Excel** on the planner and on Today (admin and viewer). Choose the dates — this week, last week, the
 week shown, this month or custom from–to — and optionally specific people. The browser builds the .xlsx
 (no data leaves Supabase), named like `Pump room plan 2026-11-23 to 2026-11-27.xlsx`:
-- **Timesheet** — one row per job per day per person: Date, Person, Start, End, Duration (hours), Task, Pump model
-  (or Any / mixed with the actual pumps), Quantity, Build type, Station, Attended / Background, Recurring, Notes.
+- **Timesheet** — one row per job per day per person: Date, Person, Start, End, Duration (hours), **Category**
+  (Production / Office), Task, Pump model (or Any / mixed with the actual pumps), Quantity, **Units done**, Build type, Station, Attended / Background, Recurring, Notes.
   Overnight and multi-day jobs are split by day; Duration is work time (breaks the job pauses for are their own
   rows, and the note says "incl. 15 min break"). **Free** rows fill the gaps within each person's own hours, plus **Break** and
   **Lunch** rows (and *Absent* / *Not a working day*). The total row uses SUBTOTAL, so it follows your filters.
 - **Absences** — Date, Person, Type, Hours (their working hours that day), Notes.
-- **Summary by person** — hours per task, total busy, free, break & lunch and absent hours (each person's own hours).
-- **Summary by pump** — units per pump model and build type (built, tested, other, and built for demand notes).
-- **Demand** — notes due in the range (and older ones not done): needed, planned in linked jobs, still to plan,
-  status, *planned too late* date, the linked jobs, priority, who asked, comment.
+- **Summary by person** — hours per task, **production vs office hours**, total busy, free, break & lunch and absent hours (each person's own hours).
+- **Summary by pump** — units per pump model and build type (built, tested, other, built for demand notes, units
+  done on jobs), plus the demand due with **Completed (last stage)** and **Still to do**. Office jobs are left out.
+- **Demand** — notes due in the range (and older ones not done): needed, planned (jobs + manual, and the manual
+  part), still to plan, **completed**, **still to do**, status, **stages** (planned / done per stage), *planned too
+  late* date, the linked jobs, priority, who asked, comment.
+- **To-dos** — open to-dos (and done ones due in the range): for whom, due, priority, status, overdue, checklist
+  "2 / 5", the scheduled time blocks and their hours, who added it, details.
 - **Test capacity** — per day: Quality Check peak and time of peak; Medicare / Mediflex bench busy hours and times;
   untimed test jobs.
 
@@ -382,18 +392,39 @@ any note and is the only one who can delete or plan.
   to the note.
 - **Covers demand** in the job form lists the open notes for that pump model (or Any / mixed). A note can be
   covered by several jobs; each job covers one note. Planner chips show *📋 demand*.
-- **Planned** = the linked jobs' quantities for tasks that *count as output*; a job continued on the next day or
-  over several days counts once.
 
-**Status — automatic, you can override it**
+**Production stages** (Settings → Pump models → **Stages**) — each pump model has its stages in order, e.g. QPro 2000:
+Sub-assembly → Final assembly → Functional test / calibration → Quality testing; Mediflex: Sub-assembly → Functional
+test / calibration → Quality testing. *Use the default* fills the standard four (whichever of those tasks exist).
+The **last stage** is what counts as *planned* and *complete* for a note. Each card shows a mini bar per stage —
+"Sub-assembly 20/50 · 5 done · Final assembly 10/50 · Quality testing 20/50 · 2 done" — and linked jobs show
+their stage. *Plan this* plans the first stage that still needs units.
+
+**How this relates to "Counts as output"** (Settings → Tasks): stages decide demand progress. *Counts as output*
+still decides the week's build volume ("Planned" in the weekly summary, the Today number, the trend chart) and is
+the fallback stage for a pump model with no stages, and for *Any / mixed* notes.
+
+**Needed · Planned · Completed** — "50 needed · 30 planned · 12 done · **38 still to do**" with a two-colour bar
+(solid = done, light = planned).
+- **Planned** = linked jobs at that stage + **Planned (manual)** (*Edit planned*, admin) for work planned outside
+  the planner. Hover the number for "20 from jobs · 10 entered manually". A job over several days counts once.
+- **Completed** = **Units done** on linked jobs (in the job form, admin) + **+ Log completed** on the note (admin:
+  quantity, date, stage — the last one by default — and a note). The card lists the latest logs ("Tue 25 Nov · +3
+  · Prince"). Logging more than needed asks first.
+
+**Status — automatic**
 | Status | When |
 |---|---|
-| ⚠ **Needs planning** | nothing planned |
-| ◐ **Partly planned** | e.g. "6 / 10 planned" |
-| ✓ **Fully planned** | planned ≥ needed |
-| **Done** | fully planned and every linked job's day has passed — or **Mark done** by hand |
+| ⚠ **Needs planning** | nothing planned at any stage |
+| ◐ **Partly planned** | something planned at any stage, but the last stage is short |
+| ✓ **Fully planned** | last-stage planned ≥ needed |
+| **Done** | last-stage completed ≥ needed — or **Mark done** by hand |
 
-*Mark done* / *Edit → Status* set an override (shown "set by hand"); *Back to automatic* clears it.
+The hand-set *Planned* status is gone (migration 012 put those notes back to automatic); only **Done** can be
+set by hand (*Mark done* / *Edit → Status → Done*), and *Back to automatic* clears it. An overdue note says
+**Overdue 2 days — 38 still to do**.
+Only the admin records completed units and manual planned quantities; the manager sees everything. Every change
+is in the History page (audit log).
 **⚠ Planned too late — Fri 28 Nov** shows when a linked job finishes after the needed-by date.
 
 **Layout** — sections with counts (Done collapsed); each note is a card: big pump model + build type · "10 needed
@@ -405,6 +436,28 @@ assembly × 4"). Sorted overdue first, then by needed-by date, then priority. Fu
 - **Today**: *Demand — most urgent*, the top 5 not yet fully planned (or planned too late); the "units of demand
   still to plan" number and the overdue count use the linked jobs too, as does the *Demand & notes* badge.
 
+## To-dos
+**Demand & Notes** has tabs **Pump demand | To-dos | All**. A to-do has a title, details, an optional due date,
+priority, an owner (a login; you by default), status **To do / In progress / Done** and an optional checklist
+(one item per line; tick items on the card — "2 / 5"). Cards are sorted overdue first, then by due date; Done is
+collapsed. Everyone can add to-dos, for themselves or for someone else, and edit the ones they added or that are
+theirs; only the admin deletes.
+
+**Schedule this** (admin) opens *Add work* as an **office job**: an office task (matched by name, e.g. "meetings",
+else the first office task), the notes = the to-do title, the owner's person (People → Edit → *Linked login*), and
+linked to the to-do. Its time blocks show on the card ("💻 Wed 26 Nov 10:30–12:00 · Prince · Meetings") and on
+the planner chip (*☑ to-do*).
+
+## Office / non-production work
+Tasks have a **Category** (Settings → Tasks): *Production* (default) or *Office / non-production*. Migration 012
+adds Documentation, Odoo / ERP, Meetings and Admin / Email — re-using tasks you already have with similar names (any
+capitalisation) and only setting their category. Office jobs:
+- hide pump model, build type, quantity, station and demand in the job form; the notes become **What are you
+  working on?**;
+- look different: a blue-grey block with 💻 in the planner and Day timeline ("Office — Meetings: Weekly ops review");
+- count as busy time (free time, Who's free now: *Office*), but are left out of pump summaries and test capacity;
+- appear in the export with Category *Office*, and as office hours in *Summary by person*.
+
 ## Weekly summary
 Shown below the planner grid (or jump to it with **Summary ↓**), for the week being displayed:
 
@@ -414,9 +467,13 @@ Shown below the planner grid (or jump to it with **Summary ↓**), for the week 
 | **Demand due** | Quantity needed on demand notes (not done) for that model and build type due by Friday of that week, **including overdue**. |
 | **Planned for it** | Of that, the quantity already planned in **jobs linked to those notes** (any week). |
 | **Still to plan** | Demand due − planned for it, per note. Red = still to plan, green ✓ 0 = all planned. |
+| **Done** | Units completed at the last stage of those notes (units done on jobs + logged). |
+| **Still to do** | Demand due − done, per note. |
 | **Later / no date** | Still to plan on notes due after that week or with no date. |
 
-Rows are per pump model and build type, with an *All types* subtotal per model. Filter to one build type
+Rows are per pump model and build type, with an *All types* subtotal per model. For models with more than one
+stage a line underneath shows planned / done **per stage** for the demand due ("Sub-assembly 50/50 planned · 8 done →
+…"). Filter to one build type
 (or *Not specified*) with the drop-down. General notes without a pump model are not counted.
 
 ## Printing
@@ -427,12 +484,15 @@ summary. Navigation, buttons and the demand panel are left out. In the print dia
 timeline on one A4 landscape page.
 
 ## History (admin)
-**History** lists every change to planner jobs, absences, demand notes and build types: when, who, what
+**History** lists every change to planner jobs, absences, demand notes, to-dos, completed units, planned
+quantities, pump model stages and build types: when, who, what
 was added / deleted, and for changes the old → new value of each field. Filter by area or by team member.
 Entries come from database triggers and cannot be edited or deleted through the app.
 
 ## Change history (audit log)
-Every insert, update and delete on **assignments**, **absences**, **demand notes**, **build types** and **equipment** is recorded
+Every insert, update and delete on **assignments**, **absences**, **demand notes**, **to-dos**, **completed units**
+(`demand_progress`), **manual planned quantities** (`demand_stage_plans`), **pump model stages**, **build types** and
+**equipment** is recorded
 automatically in `audit_log` (who, when, old and new values) by database triggers. Only admins can
 read it (on the **History** page), and nobody can edit it through the app or API.
 This is a planning aid, not a controlled QMS record.
@@ -453,3 +513,4 @@ This is a planning aid, not a controlled QMS record.
     checked as you type (continue next working day, overtime, shorten, move to start)
 12. ✅ Shared stations: no double-booking warning on Simultaneous test areas or "Can be shared" equipment
 13. ✅ Demand linked to jobs: Plan this, Covers demand, automatic status, planned too late, clearer cards
+14. ✅ Office work, to-dos, production stages, completed units and manual planned quantities

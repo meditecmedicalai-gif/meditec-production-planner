@@ -157,8 +157,8 @@ async function fillJob(pg) { await sel(dlg(pg).getByLabel('Task / operation'), '
   const rows = []; wb.getWorksheet('Timesheet').eachRow((r, i) => { if (i > 1 && r.getCell(1).value instanceof Date) rows.push(r.values); });
   const tm = (v) => (v instanceof Date ? Math.round((v.getTime() - Date.UTC(1899, 11, 30)) / 60000) : v);
   const job = rows.find((v) => v[2] === 'Irwin Walsh' && v[1].toISOString().slice(0, 10) === D(3) && tm(v[3]) === 600);
-  ok(job && tm(job[4]) === 735 && job[5] === 2 && /incl\. 15 min break/.test(job[13]), 'export: 10:00–12:15, 2.00 hours of work, "incl. 15 min break"');
-  const dan = rows.filter((v) => v[2] === 'Dan Hughes' && v[6] === 'Final assembly' && v[7] === 'MediAir');
+  ok(job && tm(job[4]) === 735 && job[5] === 2 && /incl\. 15 min break/.test(job[15]), 'export: 10:00–12:15, 2.00 hours of work, "incl. 15 min break"');
+  const dan = rows.filter((v) => v[2] === 'Dan Hughes' && v[7] === 'Final assembly' && v[8] === 'MediAir');
   ok(dan.length === 3 && tm(dan[1][3]) === 510 && tm(dan[1][4]) === 990, 'export: multi-day attended job split by day, working hours only (Tue 08:30–16:30)');
   await pg.screenshot({ path: out + '/t13-week.png', clip: { x: 0, y: 0, width: 1440, height: 1000 } });
   ok(errs.length === 0, 'no page errors ' + errs.join(';')); await b.close();

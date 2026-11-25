@@ -5,6 +5,7 @@ import { toISO, fromISO, addDays, mondayOf, today, fmtDate } from '../dates.js';
 import { loadRange, makeCtx } from './planner.js';
 import { exportRows } from '../exportData.js';
 import { loadDemand } from './demand.js';
+import { loadTodos } from './todos.js';
 
 const MAX_DAYS = 186;
 
@@ -64,9 +65,9 @@ export async function openExport({ weekMonday = null } = {}) {
         if (!everyone.input.checked && !personIds.length) { err.textContent = 'Tick at least one person.'; return false; }
         status.textContent = 'Preparing the spreadsheet…';
         try {
-          const [data, demand, xlsx] = await Promise.all([loadRange(from.value, to.value), loadDemand(), import('../exportXlsx.js')]);
+          const [data, demand, todos, xlsx] = await Promise.all([loadRange(from.value, to.value), loadDemand(), loadTodos(), import('../exportXlsx.js')]);
           if (data.error) throw data.error;
-          const rows = exportRows(makeCtx(data), { from: from.value, to: to.value, personIds, demand: demand.error ? null : demand });
+          const rows = exportRows(makeCtx(data), { from: from.value, to: to.value, personIds, demand: demand.error ? null : demand, todos: todos.ready ? todos : null });
           const name = `Pump room plan ${from.value} to ${to.value}.xlsx`;
           const wb = await xlsx.buildWorkbook(rows, { from: from.value, to: to.value, title: `Pump room plan ${from.value} to ${to.value}` });
           await xlsx.downloadWorkbook(wb, name);

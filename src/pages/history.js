@@ -18,11 +18,16 @@ const TABLES = {
   test_areas: 'Test areas',
   test_limits: 'Test limits',
   work_patterns: 'Working hours',
+  todos: 'To-dos',
+  demand_progress: 'Completed units',
+  demand_stage_plans: 'Planned quantities',
+  pump_model_stages: 'Pump model stages',
 };
 const ACTIONS = { insert: 'Added', update: 'Changed', delete: 'Deleted' };
 const NOUN = { assignments: 'job', absences: 'absence', demand_notes: 'demand note', build_types: 'build type', equipment: 'equipment', recurring_jobs: 'recurring job', recurring_exceptions: 'recurring job date', test_areas: 'test area',
   test_limits: 'test limit', test_limit_models: 'test limit model', test_area_shared_tasks: 'test area shared task',
-  work_patterns: 'work pattern', work_pattern_days: 'work pattern day', person_work_patterns: 'person’s hours', person_day_hours: 'one-off hours' };
+  work_patterns: 'work pattern', work_pattern_days: 'work pattern day', person_work_patterns: 'person’s hours', person_day_hours: 'one-off hours',
+  todos: 'to-do', pump_model_stages: 'pump model stage', demand_progress: 'completed units', demand_stage_plans: 'planned quantity' };
 const IGNORE = new Set(['id', 'created_at', 'created_by', 'updated_at', 'updated_by']);
 
 let tableFilter = '';
@@ -60,6 +65,8 @@ function fieldLabel(table, key) {
     start_time: 'Start time', end_time: 'End time', end_date: 'Ends on', background: 'Runs', equipment_id: 'Equipment',
     any_pump: 'Any / mixed pump', pump_mix: 'Actual pumps', recurring_id: 'Recurring job', recurring_date: 'Series date', recurring_detached: 'Edited on its own',
     pattern: 'Repeats', weekdays: 'Days', interval_weeks: 'Every … weeks', title: 'Name', person_id: 'Person', max_pumps: 'Max pumps', skip_date: 'Skipped date',
+    owner_id: 'For', due_date: 'Due', details: 'Details', checklist: 'Checklist', qty_done: 'Units done', todo_id: 'To-do',
+    demand_id: 'Demand note', qty: 'Quantity', position: 'Position', category: 'Category', note: 'Note', status_override: 'Status (by hand)',
   })[key] || key;
 }
 function fieldValue(key, v, L) {
@@ -70,7 +77,11 @@ function fieldValue(key, v, L) {
     case 'pump_model_id': return L.model.get(v) || '(deleted model)';
     case 'task_id': return L.task.get(v) || '(deleted task)';
     case 'build_type_id': return L.type.get(v) || '(deleted type)';
-    case 'work_date': case 'needed_by': case 'start_date': case 'end_date': return day(v);
+    case 'work_date': case 'needed_by': case 'start_date': case 'end_date': case 'due_date': return day(v);
+    case 'owner_id': return L.user.get(v) || '(deleted login)';
+    case 'todo_id': case 'demand_id': return 'linked';
+    case 'checklist': return Array.isArray(v) ? `${v.filter((x) => x.done).length} / ${v.length} ticked` : '—';
+    case 'category': return v === 'office' ? 'Office / non-production' : 'Production';
     case 'start_time': case 'end_time': return hm(v);
     case 'equipment_id': return L.equipment.get(v) || '(deleted equipment)';
     case 'any_pump': case 'recurring_detached': return v ? 'yes' : 'no';
@@ -79,7 +90,7 @@ function fieldValue(key, v, L) {
     case 'weekdays': return (v || []).map((d) => ['', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'][d]).join(', ');
     case 'skip_date': case 'recurring_date': return day(v);
     case 'priority': return PRIORITIES[v] || v;
-    case 'status': return STATUSES[v] || v;
+    case 'status': return ({ todo: 'To do', in_progress: 'In progress' })[v] || STATUSES[v] || v;
     case 'absence_type': return ABSENCE_TYPES[v] || v;
     case 'is_default': case 'active': return v ? 'yes' : 'no';
     default: return String(v);
@@ -109,6 +120,14 @@ function describe(table, row, L) {
         row.comment && `“${row.comment.length > 60 ? row.comment.slice(0, 57) + '…' : row.comment}”`].filter(Boolean).join(' · ');
     case 'build_types': case 'work_patterns':
       return row.name;
+    case 'todos':
+      return [row.title, row.owner_id && `for ${v('owner_id')}`, row.due_date && `by ${v('due_date')}`, row.status && row.status.replace('_', ' ')].filter(Boolean).join(' · ');
+    case 'pump_model_stages':
+      return `${v('pump_model_id')} · stage ${row.position}: ${v('task_id')}`;
+    case 'demand_progress':
+      return [`+${row.qty} done`, row.task_id && v('task_id'), row.work_date && v('work_date'), row.note && `“${row.note}”`].filter(Boolean).join(' · ');
+    case 'demand_stage_plans':
+      return `${v('task_id')} · planned (manual) ${row.qty}`;
     case 'work_pattern_days':
       return `${['', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'][row.weekday] || ''} · ${row.works ? `${String(row.start_time).slice(0, 5)}–${String(row.end_time).slice(0, 5)}` : 'not working'}`;
     case 'person_work_patterns':

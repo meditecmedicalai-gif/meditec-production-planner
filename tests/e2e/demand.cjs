@@ -43,7 +43,7 @@ N('nP', 'Medicare', 'Customer', 2, D(3), { comment: 'Built last week' });
 J('pD', T, 'MediAir', 'Final assembly', 'Production', 4, { id: 'jM', demand_id: 'nM' });
 J('pA', T, 'QPro 2000', 'Final assembly', 'Trial', 1, { id: 'jT', demand_id: 'nT' });
 J('pB', D(2), 'Mediflex', 'Final assembly', 'Customer', 2, { id: 'jL', demand_id: 'nL' });
-J('pB', D(-2), 'Medicare', 'Final assembly', 'Customer', 2, { id: 'jP', demand_id: 'nP' });
+J('pB', D(-2), 'Medicare', 'Final assembly', 'Customer', 2, { id: 'jP', demand_id: 'nP', qty_done: 2 }); // both units done
 J('pA', T, 'QPro 2000', 'Quality testing', 'Trial', 9, { id: 'jQT', demand_id: 'nT' }); // testing: not "counts as output"
 let fails = 0; const ok = (c, msg) => { if (!c) fails++; console.log((c ? 'PASS ' : 'FAIL ') + msg); };
 const BASE = 'http://localhost:5195/';
@@ -73,9 +73,9 @@ const card = (pg, id) => pg.locator(`.dcard[data-note="${id}"]`);
   ok(/Needs planning 2/.test(counts[0]) && /Partly planned 1/.test(counts[1]) && /Fully planned 2/.test(counts[2]) && /Done 2/.test(counts[3]), 'sections with counts: ⚠ Needs planning 2 · ◐ Partly 1 · ✓ Fully 2 · Done 2 — ' + counts.join(' | '));
   ok(await pg.locator('details.dsec').evaluate((d) => !d.open), 'Done is collapsed');
   ok(JSON.stringify(await section(pg, 'open').evaluateAll((els) => els.map((e) => e.dataset.note))) === JSON.stringify(['nS', 'nQ']), 'sorted: overdue first (Simplex), then by needed-by');
-  ok(/1 \/ 3 planned/.test(await card(pg, 'nT').textContent()) && /Partly planned/.test(await card(pg, 'nT').textContent()), 'partly planned "1 / 3 planned" (quality-testing job not counted — only output tasks)');
-  ok(/4 \/ 4 planned/.test(await card(pg, 'nM').textContent()) && /Fully planned/.test(await card(pg, 'nM').textContent()), 'fully planned "4 / 4 planned"');
-  ok(await pg.locator('details.dsec .dcard[data-note="nP"]').count() === 1, 'linked job’s date has passed → Done automatically');
+  ok(/3 needed · 1 planned/.test(await card(pg, 'nT').textContent()) && /Partly planned/.test(await card(pg, 'nT').textContent()), 'partly planned "3 needed · 1 planned" (no stages set: the output task is the last stage, so the quality-testing job is not counted)');
+  ok(/4 needed · 4 planned/.test(await card(pg, 'nM').textContent()) && /Fully planned/.test(await card(pg, 'nM').textContent()), 'fully planned "4 needed · 4 planned"');
+  ok(await pg.locator('details.dsec .dcard[data-note="nP"]').count() === 1, 'units done on the linked job ≥ needed → Done automatically');
   ok(/⚠ Planned too late — /.test(await card(pg, 'nL').textContent()), '"⚠ Planned too late — <day>" when a linked job finishes after the needed-by date');
   ok(await card(pg, 'nM').evaluate((e) => Number(getComputedStyle(e).opacity) < 1) && await card(pg, 'nQ').evaluate((e) => getComputedStyle(e).opacity === '1'), 'fully planned notes faded; open ones stand out');
   // ---- card layout (order) + due words + comment
@@ -139,8 +139,8 @@ const card = (pg, id) => pg.locator(`.dcard[data-note="${id}"]`);
   await pg.screenshot({ path: out + '/demand-planner.png', clip: { x: 0, y: 0, width: 1440, height: 1000 } });
   // ---- demand page after planning
   await pg.goto(BASE + '#/demand'); await pg.waitForSelector('.dsec'); await settle(pg, 300);
-  ok(/10 \/ 10 planned/.test(await card(pg, 'nQ').textContent()) && await section(pg, 'planned').locator('[data-note="nQ"]').count() + (await pg.locator('.dsec[data-section="planned"] .dcard[data-note="nQ"]').count()) >= 1, 'after Plan this: QPro note fully planned (10 / 10)');
-  ok(/3 \/ 5 planned/.test(await card(pg, 'nS').textContent()) && /Partly planned/.test(await card(pg, 'nS').textContent()), 'Simplex note partly planned (3 / 5)');
+  ok(/10 needed · 10 planned/.test(await card(pg, 'nQ').textContent()) && await section(pg, 'planned').locator('[data-note="nQ"]').count() + (await pg.locator('.dsec[data-section="planned"] .dcard[data-note="nQ"]').count()) >= 1, 'after Plan this: QPro note fully planned (10 / 10)');
+  ok(/5 needed · 3 planned/.test(await card(pg, 'nS').textContent()) && /Partly planned/.test(await card(pg, 'nS').textContent()), 'Simplex note partly planned (3 / 5)');
   // ---- Today: top 5 most urgent
   await pg.goto(BASE + '#/today'); await pg.waitForSelector('.urgent-demand'); await settle(pg, 400);
   const urgent = await pg.locator('.urgent-demand .dc-row').evaluateAll((els) => els.map((e) => e.dataset.note));
@@ -154,10 +154,12 @@ const card = (pg, id) => pg.locator(`.dcard[data-note="${id}"]`);
   const f = out + '/demand-export.xlsx'; await dl.saveAs(f);
   const ExcelJS = require('exceljs'); const wb = new ExcelJS.Workbook(); await wb.xlsx.readFile(f);
   const dm = wb.getWorksheet('Demand'); const rows = []; dm.eachRow((r, i) => { if (i > 1) rows.push(r.values.slice(1)); });
+  const dh = dm.getRow(1).values.slice(1); const c = (r, name) => r[dh.indexOf(name)];
   const q = rows.find((r) => r[0] === 'QPro 2000' && r[1] === 'Production');
   const l = rows.find((r) => r[0] === 'Mediflex');
-  ok(q && q[2] === 10 && q[4] === 10 && q[5] === 0 && /Fully planned/.test(q[6]) && /Amira Final assembly ×10/.test(q[8]), 'export Demand sheet: needed 10, planned 10, still to plan 0, linked job listed');
-  ok(l && l[7] instanceof Date, 'export: "Planned too late" date for the Mediflex note');
+  ok(q && c(q, 'Needed') === 10 && c(q, 'Planned (jobs + manual)') === 10 && c(q, 'Still to plan') === 0 && c(q, 'Completed') === 0 && c(q, 'Still to do') === 10
+    && /Fully planned/.test(c(q, 'Status')) && /Amira Final assembly ×10/.test(c(q, 'Linked jobs')), 'export Demand sheet: needed 10, planned 10, still to plan 0, completed 0, still to do 10, linked job listed');
+  ok(l && c(l, 'Planned too late (finishes)') instanceof Date, 'export: "Planned too late" date for the Mediflex note');
   const pu = wb.getWorksheet('Summary by pump'); const head = pu.getRow(1).values.slice(1);
   ok(head.includes('Built for demand notes (linked)'), 'export Summary by pump: linked column');
   ok(errs.length === 0, 'no page errors ' + errs.join(';')); await b.close();

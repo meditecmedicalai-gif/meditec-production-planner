@@ -34,7 +34,12 @@ function lanes(items) {
 /** "QPro 2000 · Quality testing ×5" */
 export function jobText(ctx, a) {
   const task = ctx.taskById.get(a.task_id);
-  return [ctx.pump(a), task?.name].filter(Boolean).join(' · ') + (a.qty_target != null ? ` ×${a.qty_target}` : '');
+  if (task?.category === 'office') {
+    // "Office — Meetings: Weekly ops review"
+    const what = (a.notes || '').split('\n')[0].trim();
+    return `Office — ${task.name}${what ? `: ${what.length > 40 ? `${what.slice(0, 38)}…` : what}` : ''}`;
+  }
+  return [ctx.pump(a), task?.name].filter(Boolean).join(' · ') + (a.qty_target != null ? ` ×${a.qty_target}` : '') + (a.qty_done != null ? ` · ${a.qty_done} done` : '');
 }
 
 // ------------------------------------------------------------------ week grid: busy / free bar
@@ -167,7 +172,7 @@ export function dayTimeline({ ctx, rows, iso, isToday, admin, onJob, onFree, war
       const part = ctx.partInfo ? ctx.partInfo(a) : null;
       track.append(h('button', {
         type: 'button',
-        class: `dt-job ${warns.length ? 'dt-warn' : ''} ${cutL ? 'cut-l' : ''} ${cutR ? 'cut-r' : ''}`,
+        class: `dt-job ${ctx.taskById.get(a.task_id)?.category === 'office' ? 'dt-office' : ''} ${warns.length ? 'dt-warn' : ''} ${cutL ? 'cut-l' : ''} ${cutR ? 'cut-r' : ''}`,
         style: `left:${pos(x.s)}%;width:${width(x.s, x.e)}%;--lane:${x.lane};${type ? `--type-color:${type.color}` : ''}`,
         title: [jobText(ctx, a), type?.name, tl, a.equipment_id ? `Equipment: ${ctx.equipmentLabel ? ctx.equipmentLabel(a.equipment_id) : ctx.equipmentById.get(a.equipment_id)?.name}` : null,
           pausedMin ? `Pauses for ${day.breaks.filter((b) => b.s < x.e && x.s < b.e).map((b) => b.label.toLowerCase()).join(' and ')} (${pausedMin} min)` : null,
@@ -177,7 +182,7 @@ export function dayTimeline({ ctx, rows, iso, isToday, admin, onJob, onFree, war
       },
         inner.map((b) => h('span', { class: 'dt-job-brk', 'aria-hidden': 'true', title: `${b.label} — job paused`,
           style: `left:${((Math.max(x.s, b.s) - x.s) / (x.e - x.s)) * 100}%;width:${((Math.min(x.e, b.e) - Math.max(x.s, b.s)) / (x.e - x.s)) * 100}%` })),
-        h('span', { class: 'dt-job-l' }, warns.length ? h('b', { class: 'chip-warn-icon' }, '!') : null, notes.length ? '⏰ ' : null, part ? `↪ ${part.n}/${part.total} ` : null, a.recurring_id ? '🔁 ' : null, jobText(ctx, a)),
+        h('span', { class: 'dt-job-l' }, ctx.taskById.get(a.task_id)?.category === 'office' ? '💻 ' : null, warns.length ? h('b', { class: 'chip-warn-icon' }, '!') : null, notes.length ? '⏰ ' : null, part ? `↪ ${part.n}/${part.total} ` : null, a.recurring_id ? '🔁 ' : null, jobText(ctx, a)),
         h('span', { class: 'dt-job-t' }, cutL ? `‹ ${tl}` : cutR ? `${tl} ›` : `${hm(a.start_time) && x.s >= 0 ? fmtMin(x.s) : '…'}–${x.e <= 1440 ? fmtMin(x.e) : `${fmtMin(x.e)} +1`}`,
           pausedMin ? ` (incl. ${pausedMin} min break)` : ''),
       ));

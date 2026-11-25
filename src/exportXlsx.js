@@ -61,9 +61,11 @@ export async function buildWorkbook(data, { from, to, title }) {
     { header: 'Start', key: 'start', width: 8, style: { numFmt: TIME_FMT } },
     { header: 'End', key: 'end', width: 8, style: { numFmt: TIME_FMT } },
     { header: 'Duration (hours)', key: 'hours', width: 10, style: { numFmt: HOURS_FMT } },
+    { header: 'Category', key: 'category', width: 11 },
     { header: 'Task', key: 'task', width: 26 },
     { header: 'Pump model', key: 'pump', width: 24 },
     { header: 'Quantity', key: 'qty', width: 9 },
+    { header: 'Units done', key: 'qtyDone', width: 9 },
     { header: 'Build type', key: 'type', width: 12 },
     { header: 'Station', key: 'station', width: 22 },
     { header: 'Attended / Background', key: 'mode', width: 13 },
@@ -74,14 +76,15 @@ export async function buildWorkbook(data, { from, to, title }) {
     const row = ts.addRow({
       date: xlDate(r.date), person: r.person, start: xlTime(r.start), end: xlTime(r.end === 1440 ? 1439.99 : r.end),
       hours: r.minutes != null ? Math.round((r.minutes / 60) * 100) / 100 : null,
-      task: r.task, pump: r.pump || '', qty: r.qty ?? null, type: r.type || '', station: r.station || '',
+      category: r.category || '', task: r.task, pump: r.pump || '', qty: r.qty ?? null, qtyDone: r.qtyDone ?? null, type: r.type || '', station: r.station || '',
       mode: r.mode || '', recurring: r.recurring || '', notes: r.notes || '',
     });
     if (KIND_FILL[r.kind]) row.fill = KIND_FILL[r.kind];
     if (r.kind === 'free') row.getCell('task').font = { bold: true, color: { argb: 'FF15803D' } };
+    if (r.category === 'Office') row.getCell('category').font = { color: { argb: 'FF5B6B82' }, bold: true };
   }
   const tsLast = ts.rowCount;
-  finish(ts, { lastDataRow: tsLast, cols: 13 });
+  finish(ts, { lastDataRow: tsLast, cols: 15 });
   const tsTotal = totalRow(ts, { date: null, person: 'Total (filtered rows)' }, [], 2, tsLast);
   if (tsLast >= 2) tsTotal.getCell(5).value = { formula: `SUBTOTAL(109,E2:E${tsLast})` };
   tsTotal.getCell(5).numFmt = HOURS_FMT;
@@ -104,6 +107,8 @@ export async function buildWorkbook(data, { from, to, title }) {
   const sp = sheet(wb, 'Summary by person', [
     { header: 'Person', key: 'person', width: 20 },
     ...tcols.map((t, i) => ({ header: `${t} (h)`, key: `t${i}`, width: 13, style: { numFmt: HOURS_FMT } })),
+    { header: 'Production (h)', key: 'production', width: 12, style: { numFmt: HOURS_FMT } },
+    { header: 'Office / non-production (h)', key: 'office', width: 14, style: { numFmt: HOURS_FMT } },
     { header: 'Total busy (h)', key: 'busy', width: 12, style: { numFmt: HOURS_FMT } },
     { header: 'Free (h)', key: 'free', width: 10, style: { numFmt: HOURS_FMT } },
     { header: 'Break & lunch (h)', key: 'brk', width: 12, style: { numFmt: HOURS_FMT } },
@@ -112,13 +117,13 @@ export async function buildWorkbook(data, { from, to, title }) {
   ]);
   const r2 = (v) => Math.round(v * 100) / 100;
   for (const r of data.byPerson.rows) {
-    sp.addRow({ person: r.person, ...Object.fromEntries(r.tasks.map((v, i) => [`t${i}`, r2(v)])), busy: r2(r.busy), free: r2(r.free), brk: r2(r.brk), absent: r2(r.absent), untimed: r.untimed });
+    sp.addRow({ person: r.person, ...Object.fromEntries(r.tasks.map((v, i) => [`t${i}`, r2(v)])), production: r2(r.production || 0), office: r2(r.office || 0), busy: r2(r.busy), free: r2(r.free), brk: r2(r.brk), absent: r2(r.absent), untimed: r.untimed });
   }
-  const spLast = sp.rowCount; const spCols = tcols.length + 6;
+  const spLast = sp.rowCount; const spCols = tcols.length + 8;
   finish(sp, { lastDataRow: spLast, cols: spCols });
   const spTot = totalRow(sp, { person: 'Total' }, [...Array(spCols - 1)].map((_, i) => i + 2), 2, spLast);
   for (let c = 2; c < spCols; c++) spTot.getCell(c).numFmt = HOURS_FMT;
-  sp.getRow(1).getCell(tcols.length + 2).font = { bold: true, color: { argb: BRAND } };
+  for (const c of [tcols.length + 2, tcols.length + 3, tcols.length + 4]) sp.getRow(1).getCell(c).font = { bold: true, color: { argb: BRAND } };
 
   // d) Summary by pump
   const pu = sheet(wb, 'Summary by pump', [
@@ -128,12 +133,16 @@ export async function buildWorkbook(data, { from, to, title }) {
     { header: 'Pumps tested', key: 'tested', width: 12 },
     { header: 'Other units (repair, rework…)', key: 'other', width: 16 },
     { header: 'Built for demand notes (linked)', key: 'linked', width: 15 },
+    { header: 'Units done on jobs', key: 'unitsDone', width: 12 },
     { header: 'Jobs', key: 'jobs', width: 8 },
+    { header: 'Demand due', key: 'demand', width: 10 },
+    { header: 'Completed (last stage)', key: 'completed', width: 12 },
+    { header: 'Still to do', key: 'toDo', width: 10 },
   ]);
   for (const r of data.byPump) pu.addRow(r);
   const puLast = pu.rowCount;
-  finish(pu, { lastDataRow: puLast, cols: 7 });
-  totalRow(pu, { model: 'Total' }, [3, 4, 5, 6, 7], 2, puLast);
+  finish(pu, { lastDataRow: puLast, cols: 11 });
+  totalRow(pu, { model: 'Total' }, [3, 4, 5, 6, 7, 8, 9, 10, 11], 2, puLast);
 
   // Demand — notes and the jobs planned for them
   const dm = sheet(wb, 'Demand', [
@@ -141,9 +150,13 @@ export async function buildWorkbook(data, { from, to, title }) {
     { header: 'Build type', key: 'type', width: 12 },
     { header: 'Needed', key: 'needed', width: 9 },
     { header: 'Needed by', key: 'neededBy', width: 15, style: { numFmt: DATE_FMT } },
-    { header: 'Planned (linked jobs)', key: 'planned', width: 12 },
+    { header: 'Planned (jobs + manual)', key: 'planned', width: 12 },
+    { header: 'of which manual', key: 'plannedManual', width: 10 },
     { header: 'Still to plan', key: 'toPlan', width: 10 },
+    { header: 'Completed', key: 'completed', width: 10 },
+    { header: 'Still to do', key: 'toDo', width: 10 },
     { header: 'Status', key: 'status', width: 22 },
+    { header: 'Stages (planned / done)', key: 'stages', width: 60 },
     { header: 'Planned too late (finishes)', key: 'tooLate', width: 15, style: { numFmt: DATE_FMT } },
     { header: 'Linked jobs', key: 'jobs', width: 50 },
     { header: 'Priority', key: 'priority', width: 9 },
@@ -155,8 +168,28 @@ export async function buildWorkbook(data, { from, to, title }) {
     if (r.tooLate) row.getCell('tooLate').font = { bold: true, color: { argb: 'FFB93A26' } };
   }
   const dmLast = dm.rowCount;
-  finish(dm, { lastDataRow: dmLast, cols: 12 });
-  totalRow(dm, { model: 'Total' }, [3, 5, 6], 2, dmLast);
+  finish(dm, { lastDataRow: dmLast, cols: 16 });
+  totalRow(dm, { model: 'Total' }, [3, 5, 6, 7, 8, 9], 2, dmLast);
+
+  // To-dos
+  const td = sheet(wb, 'To-dos', [
+    { header: 'To-do', key: 'title', width: 34 },
+    { header: 'For', key: 'owner', width: 16 },
+    { header: 'Due', key: 'due', width: 15, style: { numFmt: DATE_FMT } },
+    { header: 'Priority', key: 'priority', width: 9 },
+    { header: 'Status', key: 'status', width: 12 },
+    { header: 'Overdue', key: 'overdue', width: 9 },
+    { header: 'Checklist', key: 'checklist', width: 10 },
+    { header: 'Scheduled time blocks', key: 'scheduled', width: 40 },
+    { header: 'Scheduled (h)', key: 'hours', width: 10, style: { numFmt: HOURS_FMT } },
+    { header: 'Added by', key: 'addedBy', width: 16 },
+    { header: 'Details', key: 'details', width: 40 },
+  ]);
+  for (const r of data.todos || []) {
+    const row = td.addRow({ ...r, due: r.due ? xlDate(r.due) : null, hours: Math.round(r.hours * 100) / 100 });
+    if (r.overdue === 'Y') row.getCell('overdue').font = { bold: true, color: { argb: 'FFB93A26' } };
+  }
+  finish(td, { lastDataRow: td.rowCount, cols: 11 });
 
   // e) Test capacity
   const capCols = [{ header: 'Date', key: 'date', width: 15, style: { numFmt: DATE_FMT } }];

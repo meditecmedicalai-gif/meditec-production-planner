@@ -16,34 +16,75 @@ export const SECTIONS = [
 export const STATUS_LABEL = { open: 'Needs planning', partly: 'Partly planned', planned: 'Fully planned', done: 'Done' };
 
 /**
- * State of one note from the jobs linked to it.
- *   planned  = sum of the linked jobs' quantities, for tasks that count as output (e.g. Final assembly);
- *              a job continued on the next day / over several days is counted once (its part 1).
- *   status   = override, else automatic:
- *              open (nothing planned) → partly (planned < needed) → planned (planned ≥ needed)
- *              → done (fully planned and every linked job's last day has passed).
- *   tooLate  = a linked job finishes after the needed-by date.
+ * Production stages for a note: the pump model's stages in order (Settings → Pump models → Stages).
+ * Without stages (or for Any / mixed): the tasks marked "counts as output" (normally Final assembly).
+ * → [taskId, …]; the LAST one counts as planned / complete for the note.
  */
-export function demandState(note, links, { taskById, todayISO }) {
+export function stagesFor(note, { stagesByModel, taskById }) {
+  const own = !note.any_pump && note.pump_model_id ? stagesByModel?.get(note.pump_model_id) : null;
+  if (own?.length) return own;
+  return [...taskById.values()].filter((t) => t.counts_as_output).sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0)).map((t) => t.id);
+}
+
+/**
+ * State of one note.
+ * Per stage: planned = linked jobs' quantities (a continued / multi-day job once) + "Planned (manual)";
+ *            done    = linked jobs' "units done" + "+ Log completed" entries.
+ * The note's planned / completed are the LAST stage's.
+ * Status (override "done" wins, else automatic):
+ *   done (completed ≥ needed) → planned (planned ≥ needed) → partly (anything planned at any stage) → open.
+ *   tooLate = a linked job finishes after the needed-by date; overdue = past needed-by and not done.
+ * opts: { taskById, todayISO, stagesByModel: Map(modelId → [taskId]), manual: [{demand_id, task_id, qty}],
+ *         logs: [{demand_id, task_id, qty, work_date, note, created_by}] }
+ */
+export function demandState(note, links, { taskById, todayISO, stagesByModel = null, manual = [], logs = [] }) {
   const mine = links.filter((a) => a.demand_id === note.id);
   const roots = mine.filter((a) => !a.part_of);
-  const counts = (a) => Boolean(taskById.get(a.task_id)?.counts_as_output);
-  const planned = roots.filter(counts).reduce((t, a) => t + (a.qty_target || 0), 0);
+  const stageIds = stagesFor(note, { stagesByModel, taskById });
+  const last = stageIds.at(-1) ?? null;
+  const myManual = manual.filter((m) => m.demand_id === note.id);
+  const myLogs = logs.filter((l) => l.demand_id === note.id)
+    .sort((a, b) => (b.work_date || '').localeCompare(a.work_date || '') || (b.created_at || '').localeCompare(a.created_at || ''));
+  const stages = stageIds.map((tid) => {
+    const plannedJobs = roots.filter((a) => a.task_id === tid).reduce((t, a) => t + (a.qty_target || 0), 0);
+    const plannedManual = myManual.filter((m) => m.task_id === tid).reduce((t, m) => t + (m.qty || 0), 0);
+    const doneJobs = mine.filter((a) => a.task_id === tid).reduce((t, a) => t + (a.qty_done || 0), 0);
+    const doneLogged = myLogs.filter((l) => (l.task_id || last) === tid).reduce((t, l) => t + (l.qty || 0), 0);
+    return { taskId: tid, name: taskById.get(tid)?.name || 'Stage', plannedJobs, plannedManual, planned: plannedJobs + plannedManual, doneJobs, doneLogged, done: doneJobs + doneLogged };
+  });
+  const lastStage = stages.at(-1) || { planned: 0, done: 0, plannedJobs: 0, plannedManual: 0, doneJobs: 0, doneLogged: 0 };
+  const planned = lastStage.planned;
+  const completed = lastStage.done;
   const needed = note.quantity ?? null;
+  const anyPlanned = stages.some((x) => x.planned > 0);
   const lastFinish = mine.length ? mine.map(endDateOf).sort().at(-1) : null;
-  const allPassed = mine.length > 0 && mine.every((a) => endDateOf(a) < todayISO);
   let auto;
-  if (!planned) auto = 'open';
-  else if (needed != null && planned < needed) auto = 'partly';
-  else auto = allPassed ? 'done' : 'planned';
-  const override = note.status_override || null;
+  if (needed != null && completed >= needed && needed > 0) auto = 'done';
+  else if (needed != null ? planned >= needed && planned > 0 : planned > 0) auto = 'planned';
+  else if (anyPlanned) auto = 'partly';
+  else auto = 'open';
+  const override = note.status_override === 'done' ? 'done' : null; // only "Done" can be set by hand now
   const status = override || auto;
+  const stageOf = new Set(stageIds);
   return {
-    planned, needed, remaining: needed != null ? Math.max(0, needed - planned) : null,
+    stages, planned, completed, needed, lastStageName: lastStage.name || null,
+    plannedJobs: lastStage.plannedJobs, plannedManual: lastStage.plannedManual,
+    remaining: needed != null ? Math.max(0, needed - planned) : null,     // still to plan
+    toDo: needed != null ? Math.max(0, needed - completed) : null,         // still to do
     status, auto, overridden: Boolean(override), lastFinish,
+    overdue: Boolean(note.needed_by && note.needed_by < todayISO && status !== 'done'),
     tooLate: Boolean(note.needed_by && lastFinish && lastFinish > note.needed_by && status !== 'done'),
-    jobs: roots.slice().sort((a, b) => (a.work_date < b.work_date ? -1 : a.work_date > b.work_date ? 1 : 0)),
+    jobs: roots.slice().sort((a, b) => (a.work_date < b.work_date ? -1 : a.work_date > b.work_date ? 1 : 0))
+      .map((a) => Object.assign(a, { _stage: stageOf.has(a.task_id) ? taskById.get(a.task_id)?.name : null })),
+    logs: myLogs,
   };
+}
+
+/** The first stage that still needs planning (for "Plan this"): { taskId, qty } or null. */
+export function nextStageToPlan(state) {
+  if (state.needed == null) return state.stages[0] ? { taskId: state.stages.at(-1).taskId, qty: null } : null;
+  const s = state.stages.find((x) => x.planned < state.needed);
+  return s ? { taskId: s.taskId, qty: state.needed - s.planned } : null;
 }
 
 /** The value kept in demand_notes.status for anything that still reads it. */

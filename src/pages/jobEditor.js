@@ -207,6 +207,32 @@ export function editAssignment({ ctx, person, iso, assignment, isoDays, personBy
 
   const modelField = field('Pump model', pumps.modelSel);
   const typeField = field('Build type', typeSel);
+  // Office / non-production jobs: no pump, type, quantity or station; notes up top
+  const isOffice = () => ctx.taskById.get(taskSel.value)?.category === 'office';
+  const qtyField = field('Quantity target', qty, 'Units to complete — for testing tasks, the number of pumps on test.');
+  const doneInp = h('input', { type: 'number', min: 0, step: 1, inputmode: 'numeric', value: assignment?.qty_done ?? '', 'aria-label': 'Units done' });
+  const showDone = !isNew && 'qty_done' in (assignment || {});
+  const doneField = showDone ? field('Units done', doneInp, 'So far, e.g. 4 of 5 — counts towards the demand note it covers.') : null;
+  const qtyRow = h('div', { class: 'form-grid form-grid-2' }, qtyField, doneField);
+  const equipField = field('Equipment / test station', equipSel);
+  const notesField = field('Notes', notes);
+  const notesTop = h('div', { class: 'notes-top' });
+  const notesBottom = h('div', {});
+  const todoItems = ctx.todos?.ready ? ctx.todos.items : [];
+  const todoSel = todoItems.length || src?.todo_id ? h('select', {}, h('option', { value: '' }, '— none —'),
+    todoItems.filter((x) => x.todo.status !== 'done' || x.todo.id === src?.todo_id).map((x) => h('option', { value: x.todo.id, selected: x.todo.id === src?.todo_id },
+      [x.todo.title, x.todo.due_date ? `due ${fmtDayShort(fromISO(x.todo.due_date))}` : null, ctx.todos.nameOf(x.todo.owner_id)].filter(Boolean).join(' · ')))) : null;
+  const todoField = todoSel ? field('For to-do', todoSel, 'Optional. The time block shows on the to-do’s card.') : null;
+  const applyOffice = () => {
+    const office = isOffice();
+    for (const el of [modelField, typeField, qtyRow, equipField, demandField]) if (el) el.hidden = office;
+    if (office) pumps.mixBox.hidden = true;
+    if (todoField) todoField.hidden = !office;
+    notesField.querySelector('label').textContent = office ? 'What are you working on?' : 'Notes';
+    notes.rows = office ? 3 : 2;
+    notes.placeholder = office ? 'e.g. Update the QPro build instructions' : '';
+    (office ? notesTop : notesBottom).append(notesField);
+  };
 
   const isBgNow = () => (bgSel.value === '' ? Boolean(ctx.taskById.get(taskSel.value)?.is_background) : bgSel.value === 'true');
   const personHours = (d) => (personSel.value && ctx.hoursFor ? ctx.hoursFor(personSel.value, d) : null);
@@ -377,6 +403,7 @@ export function editAssignment({ ctx, person, iso, assignment, isoDays, personBy
     setBgOptions();
     pumps.rebuild();
     rebuildDemand();
+    applyOffice();
     // default start: the person's next free slot within their hours (new jobs only, until you type a start)
     if (isNew && !copyFrom && !times && !startTouched && personSel.value && selectedDates()[0] && ctx.dayOf) {
       const d0 = selectedDates()[0];
@@ -512,6 +539,19 @@ export function editAssignment({ ctx, person, iso, assignment, isoDays, personBy
     };
     // demand_id comes with migration 011: only sent when used
     if (demandSel && (demandSel.value || src?.demand_id)) values.demand_id = demandSel.value || null;
+    // migration 012: units done (admin) and the to-do an office job is for
+    if (showDone) {
+      const d = doneInp.value === '' ? null : Number(doneInp.value);
+      if (d != null && (!Number.isInteger(d) || d < 0)) { error.textContent = 'Units done must be a whole number (0 or more).'; return false; }
+      if (d != null && values.qty_target != null && d > values.qty_target
+          && !(await confirmDialog('More than planned?', `${d} done, but the job is for ${values.qty_target}. Save anyway?`, 'Save anyway', 'primary'))) return false;
+      values.qty_done = d;
+    }
+    if (todoSel && (todoSel.value || src?.todo_id)) values.todo_id = isOffice() ? todoSel.value || null : null;
+    if (isOffice()) {
+      Object.assign(values, { pump_model_id: null, any_pump: false, pump_mix: null, build_type_id: null, qty_target: null, equipment_id: null });
+      if ('demand_id' in values || src?.demand_id) values.demand_id = null;
+    }
     // only sent when off, so the form also works before migration 009
     if (!pauseBox.input.checked) values.pause_for_breaks = false;
     else if (assignment && assignment.pause_for_breaks === false) values.pause_for_breaks = true;
@@ -619,9 +659,11 @@ export function editAssignment({ ctx, person, iso, assignment, isoDays, personBy
         h('div', { class: 'day-checks' }, dayBoxes.map((b) => b.el)),
       ) : null,
       field('Task / operation', taskSel),
+      notesTop,
+      todoField,
       h('div', { class: 'form-grid form-grid-2' }, modelField, typeField),
       pumps.mixBox,
-      field('Quantity target', qty, 'Units to complete — for testing tasks, the number of pumps on test.'),
+      qtyRow,
       h('fieldset', { class: 'skills-fieldset' },
         h('legend', {}, 'Timing & equipment (optional)'),
         h('div', { class: 'form-grid form-grid-3 timing-grid' },
@@ -632,12 +674,12 @@ export function editAssignment({ ctx, person, iso, assignment, isoDays, personBy
         summaryBox,
         timeHint,
         miniBox,
-        h('div', { class: 'form-grid form-grid-2' }, field('Runs', bgSel), field('Equipment / test station', equipSel)),
+        h('div', { class: 'form-grid form-grid-2' }, field('Runs', bgSel), equipField),
         demandField,
       ),
       repeat ? h('fieldset', { class: 'skills-fieldset' }, h('legend', {}, '🔁 Repeat'), repeat.el) : null,
       assignment?.recurring_id ? h('p', { class: 'muted small' }, `🔁 Part of a recurring series${ctx.recurringById?.get(assignment.recurring_id) ? ` — ${describeRepeat(ctx.recurringById.get(assignment.recurring_id))}` : ''}.`) : null,
-      field('Notes', notes),
+      notesBottom,
       warnBox,
       error,
     ),
