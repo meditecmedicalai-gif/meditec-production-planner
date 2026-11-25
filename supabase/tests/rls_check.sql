@@ -7,7 +7,7 @@
 -- The whole check is ONE statement. At the end it deliberately stops
 -- with an "error" whose message is the report:
 --
---     RLS CHECK FINISHED: 134 passed, 0 failed ...
+--     RLS CHECK FINISHED: 138 passed, 0 failed ...
 --
 -- Raising that error is what undoes every bit of test data, so nothing
 -- is left behind. Every line should start with PASS.
@@ -29,6 +29,17 @@ declare
   t    record;
   missing text;
   pat  uuid;
+  mm_area  uuid;   -- Medicare / Mediflex test area (found by its pump models, else by name)
+  mm_name  text;
+  mm_max   int;
+  mm_mode  text;
+  mm_tasks text;
+  qc_area  uuid;   -- Quality Check area (found by the QPro model, else by name)
+  qc_name  text;
+  qc_max   int;
+  qc_mode  text;
+  st_names text;
+  probs    text[] := '{}';
   pid3 uuid;
   pid2 uuid;
   passed int;
@@ -82,24 +93,76 @@ begin
   res := res || format('%s  setup   no site-wide limit — each test area is separate (006 migration run)',
     case when exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'app_settings' and column_name = 'max_pumps_on_test')
          then 'FAIL' else 'PASS' end);
-  res := res || format('%s  setup   Quality Check area (renamed from Main test area): absolute max 7 pumps',
-    case when (select max_pumps from public.test_areas where name = 'Quality Check') = 7 then 'PASS' else 'FAIL' end);
+  -- Quality Check area — by rule, not exact names: max 7 at once, simultaneous.
+  select m.test_area_id into qc_area from public.pump_models m
+  where m.test_area_id is not null and m.name ilike '%qpro%'
+  group by m.test_area_id order by count(*) desc limit 1;
+  if qc_area is null then
+    select a.id into qc_area from public.test_areas a where a.name ilike '%quality%' or a.name ilike 'main test area' order by a.sort_order limit 1;
+  end if;
+  probs := '{}';
+  if qc_area is null then
+    probs := probs || 'no test area found (QPro 2000 has no default test area, and no area name mentions Quality Check)'::text;
+  else
+    select a.name, a.max_pumps, a.capacity_mode into qc_name, qc_max, qc_mode from public.test_areas a where a.id = qc_area;
+    if qc_max is distinct from 7 then probs := probs || format('max pumps is %s, should be 7', qc_max); end if;
+    if qc_mode is distinct from 'simultaneous' then
+      probs := probs || format('capacity mode is "%s", should be "Simultaneous"', coalesce(qc_mode, 'not set'));
+    end if;
+  end if;
+  res := res || case when cardinality(probs) = 0
+    then format('PASS  setup   Quality Check area "%s": absolute max 7 pumps at once, simultaneous', qc_name)
+    else format('FAIL  setup   Quality Check area%s: %s — fix in Settings → Test areas & limits',
+                case when qc_name is null then '' else format(' "%s"', qc_name) end, array_to_string(probs, '; ')) end;
   res := res || format('%s  setup   equipment can be linked to a test area (007 migration run)',
     case when exists (select 1 from information_schema.columns
                       where table_schema = 'public' and table_name = 'equipment' and column_name = 'test_area_id')
          then 'PASS' else 'FAIL' end);
-  res := res || format('%s  setup   "Quality Check" station counts towards the Quality Check area',
-    case when exists (select 1 from public.equipment e join public.test_areas a on a.id = e.test_area_id
-                      where e.name = 'Quality Check' and a.name = 'Quality Check') then 'PASS' else 'FAIL' end);
-  res := res || format('%s  setup   "Medicare / Mediflex test bench" station counts towards the Medicare / Mediflex area',
-    case when exists (select 1 from public.equipment e join public.test_areas a on a.id = e.test_area_id
-                      where e.name = 'Medicare / Mediflex test bench' and a.name = 'Medicare / Mediflex test area') then 'PASS' else 'FAIL' end);
-  res := res || format('%s  setup   Medicare / Mediflex area separate: max 1, calibration + quality testing count once',
-    case when (select max_pumps from public.test_areas where name = 'Medicare / Mediflex test area') = 1
-          and (select count(*) from public.test_area_shared_tasks s join public.test_areas a on a.id = s.test_area_id
-               join public.tasks k on k.id = s.task_id
-               where a.name = 'Medicare / Mediflex test area' and k.name in ('Functional test / calibration', 'Quality testing')) = 2
-         then 'PASS' else 'FAIL' end);
+  -- Stations: at least one active station counts towards each area (any station name)
+  select string_agg(e.name, ', ' order by e.sort_order) into st_names from public.equipment e where e.test_area_id = qc_area and e.active;
+  res := res || case when st_names is not null
+    then format('PASS  setup   station(s) counting towards the Quality Check area: %s', st_names)
+    else format('FAIL  setup   no active station counts towards the Quality Check area%s — link one in Settings → Equipment / test stations → Test area',
+                case when qc_name is null then '' else format(' "%s"', qc_name) end) end;
+  -- The rule, not exact names: the Medicare / Mediflex area has max 1, works one pump at a time, and has a
+  -- calibration task and a quality-testing task that count once together (any wording / capitalisation).
+  select m.test_area_id into mm_area from public.pump_models m
+  where m.test_area_id is not null and (m.name ilike '%medicare%' or m.name ilike '%mediflex%')
+  group by m.test_area_id order by count(*) desc limit 1;
+  if mm_area is null then
+    select a.id into mm_area from public.test_areas a where a.name ilike '%medicare%' or a.name ilike '%mediflex%' order by a.sort_order limit 1;
+  end if;
+  select string_agg(e.name, ', ' order by e.sort_order) into st_names from public.equipment e where e.test_area_id = mm_area and e.active;
+  res := res || case when st_names is not null
+    then format('PASS  setup   station(s) counting towards the Medicare / Mediflex area: %s', st_names)
+    else format('FAIL  setup   no active station counts towards the Medicare / Mediflex area%s — link one in Settings → Equipment / test stations → Test area',
+                coalesce((select format(' "%s"', a.name) from public.test_areas a where a.id = mm_area), '')) end;
+  probs := '{}';
+  if mm_area is null then
+    probs := probs || 'no test area found (none of the Medicare / Mediflex pump models has a default test area, and no area name mentions Medicare or Mediflex)'::text;
+  else
+    select a.name, a.max_pumps, a.capacity_mode into mm_name, mm_max, mm_mode from public.test_areas a where a.id = mm_area;
+    select string_agg(k.name, ', ' order by k.sort_order) into mm_tasks
+    from public.test_area_shared_tasks s join public.tasks k on k.id = s.task_id where s.test_area_id = mm_area;
+    if mm_max is distinct from 1 then
+      probs := probs || format('max pumps is %s, should be 1', mm_max);
+    end if;
+    if mm_mode is distinct from 'sequential' then
+      probs := probs || format('capacity mode is "%s", should be "One at a time" (sequential)', coalesce(mm_mode, 'not set'));
+    end if;
+    if not exists (select 1 from public.test_area_shared_tasks s join public.tasks k on k.id = s.task_id
+                   where s.test_area_id = mm_area and k.name ilike '%calibrat%') then
+      probs := probs || format('no calibration task among the tasks that count once (shared now: %s)', coalesce(mm_tasks, 'none'));
+    end if;
+    if not exists (select 1 from public.test_area_shared_tasks s join public.tasks k on k.id = s.task_id
+                   where s.test_area_id = mm_area and k.name ilike '%quality%') then
+      probs := probs || format('no quality-testing task among the tasks that count once (shared now: %s)', coalesce(mm_tasks, 'none'));
+    end if;
+  end if;
+  res := res || case when cardinality(probs) = 0
+    then format('PASS  setup   Medicare / Mediflex area "%s": max 1, one at a time, %s count once', mm_name, mm_tasks)
+    else format('FAIL  setup   Medicare / Mediflex area%s: %s — fix in Settings → Test areas & limits',
+                case when mm_name is null then '' else format(' "%s"', mm_name) end, array_to_string(probs, '; ')) end;
   res := res || format('%s  setup   MATS and Bari-Med 1 have no limit group (count towards Quality Check only)',
     case when exists (select 1 from public.test_limit_models x join public.pump_models m on m.id = x.pump_model_id
                       where m.name in ('MediAir Turn Sense (MATS)', 'Bari-Med 1')) then 'FAIL' else 'PASS' end);
@@ -108,9 +171,10 @@ begin
           and (select count(*) from public.work_patterns where is_default) = 1
           and not exists (select 1 from public.work_patterns p where (select count(*) from public.work_pattern_days d where d.pattern_id = p.id) <> 7)
          then 'PASS' else 'FAIL' end);
-  res := res || format('%s  setup   Medicare / Mediflex area works one pump at a time (capacity mode "sequential")',
-    case when (select capacity_mode from public.test_areas where name = 'Medicare / Mediflex test area') = 'sequential'
-          and (select capacity_mode from public.test_areas where name = 'Quality Check') = 'simultaneous' then 'PASS' else 'FAIL' end);
+  res := res || case
+    when qc_area is null or mm_area is null then 'FAIL  setup   Quality Check and Medicare / Mediflex are separate areas — one of them was not found (see above)'
+    when qc_area = mm_area then format('FAIL  setup   Quality Check and Medicare / Mediflex share one test area ("%s") — they must be separate (Settings → Pump models → Default test area)', qc_name)
+    else 'PASS  setup   Quality Check and Medicare / Mediflex are separate test areas (no limit across them)' end;
   res := res || format('%s  setup   default pattern: a person with no pattern works Monday, not Sunday',
     case when public.person_works(gen_random_uuid(), date '2026-11-23') and not public.person_works(gen_random_uuid(), date '2026-11-29')
          then 'PASS' else 'FAIL' end);
@@ -120,6 +184,10 @@ begin
          then 'PASS' else 'FAIL' end);
   res := res || format('%s  setup   equipment can be marked "Can be shared", default no (010 migration run)',
     case when (select column_default from information_schema.columns where table_schema = 'public' and table_name = 'equipment' and column_name = 'shareable') = 'false'
+         then 'PASS' else 'FAIL' end);
+  res := res || format('%s  setup   jobs can cover a demand note; note status can be overridden (011 migration run)',
+    case when exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'assignments' and column_name = 'demand_id')
+          and exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'demand_notes' and column_name = 'status_override')
          then 'PASS' else 'FAIL' end);
   res := res || format('%s  setup   people can be linked to a login (people.user_id)',
     case when exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'people' and column_name = 'user_id')
@@ -307,9 +375,13 @@ begin
     get diagnostics n = row_count;
     res := res || format('%s  viewer  can edit own note (comment, quantity, type)', case when n = 1 then 'PASS' else 'FAIL' end);
 
-    update public.demand_notes set status = 'done' where id = note_id;
+    update public.demand_notes set status = 'done', status_override = 'done' where id = note_id;
     get diagnostics n = row_count;
-    res := res || format('%s  viewer  can mark own note done', case when n = 1 then 'PASS' else 'FAIL' end);
+    res := res || format('%s  viewer  can mark own note done (status override)', case when n = 1 then 'PASS' else 'FAIL' end);
+
+    update public.assignments set demand_id = note_id;
+    get diagnostics n = row_count;
+    res := res || format('%s  viewer  cannot link jobs to a demand note', case when n = 0 then 'PASS' else 'FAIL' end);
 
     delete from public.demand_notes where id = note_id;
     get diagnostics n = row_count;
@@ -329,6 +401,9 @@ begin
       update public.demand_notes set comment = 'hacked' where id = other_note;
       get diagnostics n = row_count;
       res := res || format('%s  viewer  cannot edit others'' notes', case when n = 0 then 'PASS' else 'FAIL' end);
+      update public.demand_notes set status_override = 'done' where id = other_note;
+      get diagnostics n = row_count;
+      res := res || format('%s  viewer  cannot override the status of others'' notes', case when n = 0 then 'PASS' else 'FAIL' end);
     end if;
 
     execute 'reset role';
@@ -492,6 +567,15 @@ begin
       select count(*) into n from public.audit_log
       where table_name in ('work_patterns', 'work_pattern_days', 'person_work_patterns', 'person_day_hours') and changed_at >= now();
       res := res || format('%s  admin   working-hours changes written to the change log', case when n >= 4 then 'PASS' else 'FAIL' end);
+
+      -- Demand: a job covers a note; deleting the note only unlinks the job
+      insert into public.demand_notes (quantity, comment, pump_model_id) values (4, 'RLS demand link', (select id from public.pump_models order by sort_order limit 1)) returning id into other_note;
+      insert into public.assignments (person_id, work_date, task_id, pump_model_id, build_type_id, qty_target, demand_id)
+      values (pid3, current_date, (select id from public.tasks where name = 'Final assembly'), (select id from public.pump_models order by sort_order limit 1),
+              (select id from public.build_types where is_default), 4, other_note) returning id into pid2;
+      delete from public.demand_notes where id = other_note;
+      select count(*) into n from public.assignments where id = pid2 and demand_id is null;
+      res := res || format('%s  admin   job linked to a demand note; deleting the note keeps the job (unlinked)', case when n = 1 then 'PASS' else 'FAIL' end);
 
       -- A job continued on the next working day: deleting part 1 removes its parts
       insert into public.assignments (person_id, work_date, task_id, start_time, end_time)

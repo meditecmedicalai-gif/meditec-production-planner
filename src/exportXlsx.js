@@ -127,12 +127,36 @@ export async function buildWorkbook(data, { from, to, title }) {
     { header: 'Units built (output tasks)', key: 'built', width: 14 },
     { header: 'Pumps tested', key: 'tested', width: 12 },
     { header: 'Other units (repair, rework…)', key: 'other', width: 16 },
+    { header: 'Built for demand notes (linked)', key: 'linked', width: 15 },
     { header: 'Jobs', key: 'jobs', width: 8 },
   ]);
   for (const r of data.byPump) pu.addRow(r);
   const puLast = pu.rowCount;
-  finish(pu, { lastDataRow: puLast, cols: 6 });
-  totalRow(pu, { model: 'Total' }, [3, 4, 5, 6], 2, puLast);
+  finish(pu, { lastDataRow: puLast, cols: 7 });
+  totalRow(pu, { model: 'Total' }, [3, 4, 5, 6, 7], 2, puLast);
+
+  // Demand — notes and the jobs planned for them
+  const dm = sheet(wb, 'Demand', [
+    { header: 'Pump model', key: 'model', width: 24 },
+    { header: 'Build type', key: 'type', width: 12 },
+    { header: 'Needed', key: 'needed', width: 9 },
+    { header: 'Needed by', key: 'neededBy', width: 15, style: { numFmt: DATE_FMT } },
+    { header: 'Planned (linked jobs)', key: 'planned', width: 12 },
+    { header: 'Still to plan', key: 'toPlan', width: 10 },
+    { header: 'Status', key: 'status', width: 22 },
+    { header: 'Planned too late (finishes)', key: 'tooLate', width: 15, style: { numFmt: DATE_FMT } },
+    { header: 'Linked jobs', key: 'jobs', width: 50 },
+    { header: 'Priority', key: 'priority', width: 9 },
+    { header: 'Asked by', key: 'askedBy', width: 16 },
+    { header: 'Comment', key: 'comment', width: 40 },
+  ]);
+  for (const r of data.demand || []) {
+    const row = dm.addRow({ ...r, neededBy: r.neededBy ? xlDate(r.neededBy) : null, tooLate: r.tooLate ? xlDate(r.tooLate) : null });
+    if (r.tooLate) row.getCell('tooLate').font = { bold: true, color: { argb: 'FFB93A26' } };
+  }
+  const dmLast = dm.rowCount;
+  finish(dm, { lastDataRow: dmLast, cols: 12 });
+  totalRow(dm, { model: 'Total' }, [3, 5, 6], 2, dmLast);
 
   // e) Test capacity
   const capCols = [{ header: 'Date', key: 'date', width: 15, style: { numFmt: DATE_FMT } }];

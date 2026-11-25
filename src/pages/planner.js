@@ -1,7 +1,8 @@
 import { h, mount, toast, reportError, openModal, confirmDialog, field, loading, hhmm } from '../ui.js';
 import { supabase } from '../supabase.js';
 import { auth } from '../auth.js';
-import { demandPanel } from './demand.js';
+import { demandPanel, loadDemand, takePendingPlan, noteText } from './demand.js';
+import { summaryNotes } from './summary.js';
 import { loadSummaryDemand, summaryCard } from './summary.js';
 import { isBackground, coversDay, endDateOf, timeLabel, clashes, hm, pumpLabel, ABSENCE_TYPES } from '../jobs.js';
 import { capacityConfig, capacityForDay, level, stationMismatch, occupancyText, equipmentShared } from '../capacity.js';
@@ -82,6 +83,9 @@ export async function loadRange(from, to) {
       const run = (cols) => supabase.from('assignments').select(cols)
         .lte('work_date', to).or(`work_date.gte.${dayBefore},end_date.gte.${from}`)
         .order('start_time', { nullsFirst: true }).order('created_at');
+      // newest columns first; fall back if a migration hasn't been run yet (011 → 009 → base)
+      const r0 = await run(`${JOB_COLUMNS}, pause_for_breaks, part_of, demand_id`);
+      if (!r0.error) return r0;
       const r1 = await run(`${JOB_COLUMNS}, pause_for_breaks, part_of`);
       return r1.error ? run(JOB_COLUMNS) : r1;
     })(),
@@ -302,16 +306,15 @@ export async function renderPlanner(main) {
     const { error } = await supabase.rpc('extend_recurring_jobs');
     if (!error) extendedOn = todayISO;
   }
-  const [data, panel, summaryDemand] = await Promise.all([
-    loadWeek(monday),
-    demandPanel(monday, () => renderPlanner(main)),
-    loadSummaryDemand(),
-  ]);
-  if (reportError(data.error || summaryDemand.error, 'Loading the planner')) return;
+  const [data, demand] = await Promise.all([loadWeek(monday), loadDemand()]);
+  if (reportError(data.error || demand.error, 'Loading the planner')) return;
+  const panel = demandPanel(demand, () => renderPlanner(main));
+  const summaryDemand = { notes: summaryNotes(demand) };
   const hours = data.hours;
   const { view, day: viewDay } = viewFromHash(isoDays, todayISO);
   const dayIdx = isoDays.indexOf(viewDay);
   const ctx = makeCtx(data);
+  ctx.demand = demand; // for "Covers demand" in the job form
   const reload = () => renderPlanner(main);
 
   // Rows: active people, plus inactive people who still have work/absence this week.
@@ -415,6 +418,7 @@ export async function renderPlanner(main) {
     const warnings = warningsOf(a, person, iso);
     const notes = ctx.breakNotes(a, person.name, iso);
     const part = ctx.partInfo(a);
+    const cover = a.demand_id ? demand.items.find((i) => i.note.id === a.demand_id) : null;
     const label = [pump, type?.name, task?.name, a.qty_target != null ? a.qty_target : null].filter((x) => x != null).join(' · ');
     return h('button', {
       type: 'button',
@@ -436,7 +440,8 @@ export async function renderPlanner(main) {
         h('span', { class: 'chip-task' }, task?.name ?? '?'),
         a.qty_target != null && !continuing && !(part && part.n > 1) ? h('span', { class: 'chip-qty' }, `× ${a.qty_target}`) : null,
       ),
-      equip || part ? h('span', { class: 'chip-meta' }, part ? h('span', { class: 'part-tag', title: `Continued job: part ${part.n} of ${part.total}` }, `↪ part ${part.n} of ${part.total}`) : null,
+      equip || part || cover ? h('span', { class: 'chip-meta' }, part ? h('span', { class: 'part-tag', title: `Continued job: part ${part.n} of ${part.total}` }, `↪ part ${part.n} of ${part.total}`) : null,
+        cover ? h('span', { class: 'demand-tag', title: `Covers demand: ${noteText(cover.note, demand)}${cover.note.needed_by ? ` by ${fmtDayShort(fromISO(cover.note.needed_by))}` : ''} · ${cover.state.planned}${cover.state.needed != null ? ` / ${cover.state.needed}` : ''} planned` }, '📋 demand') : null,
         equip ? h('span', { class: 'equip-tag' }, equip.name) : null) : null,
       a.notes && !continuing && !(part && part.n > 1) ? h('span', { class: 'chip-notes' }, a.notes) : null,
     );
@@ -580,6 +585,24 @@ export async function renderPlanner(main) {
       : h('div', { class: 'empty' }, 'No team members yet.'),
   );
 
+  /** Arrived from "Plan this": open Add work pre-filled and linked to the note. */
+  const openPendingPlan = () => {
+    const plan = takePendingPlan();
+    if (!plan || !admin) return;
+    const x = demand.items.find((i) => i.note.id === plan.noteId);
+    if (!x || !isoDays.includes(plan.date)) return;
+    const n = x.note;
+    const task = data.tasks.find((t) => t.active && t.counts_as_output) || null;
+    // suggest the trained person with the most free time that day
+    const best = rows.filter((p) => p.active && (n.any_pump || ctx.trained(p.id, n.pump_model_id))
+      && ctx.hoursFor(p.id, plan.date).works && !ctx.absenceOn(p.id, plan.date))
+      .sort((a, b) => ctx.dayOf(b.id, plan.date).freeMin - ctx.dayOf(a.id, plan.date).freeMin)[0] || null;
+    edit({ person: best, iso: plan.date, prefill: {
+      task_id: task?.id, pump_model_id: n.pump_model_id, any_pump: n.any_pump, build_type_id: n.build_type_id,
+      qty_target: x.state.remaining ?? n.quantity, demand_id: n.id,
+    } });
+  };
+
   if (view === 'day') {
     mount(main,
       printHeader,
@@ -589,6 +612,7 @@ export async function renderPlanner(main) {
       recurringPanel(ctx, personById, reload),
       dayView({ ctx, rows, iso: viewDay, isoDays, days, todayISO, admin, hasAreas, capPills, openJob, warningsOf, edit }),
     );
+    openPendingPlan();
     return;
   }
   mount(main,
@@ -602,6 +626,7 @@ export async function renderPlanner(main) {
     phone,
     summaryCard({ monday, data: ctx, notes: summaryDemand.notes, weekLabel }),
   );
+  openPendingPlan();
 }
 
 // ------------------------------------------------------------------ Day timeline view
