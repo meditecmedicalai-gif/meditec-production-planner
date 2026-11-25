@@ -7,7 +7,7 @@
 -- The whole check is ONE statement. At the end it deliberately stops
 -- with an "error" whose message is the report:
 --
---     RLS CHECK FINISHED: 162 passed, 0 failed ...
+--     RLS CHECK FINISHED: 176 passed, 0 failed ...
 --
 -- Raising that error is what undoes every bit of test data, so nothing
 -- is left behind. Every line should start with PASS.
@@ -47,6 +47,9 @@ declare
   st_task   uuid;  -- a stage task
   pid3 uuid;
   pid2 uuid;
+  job_h uuid;      -- a job over two days (013)
+  job_p uuid;
+  rows_j jsonb;
   passed int;
   failed int;
 begin
@@ -229,6 +232,35 @@ begin
   res := res || case when exists (select 1 from public.demand_notes where status_override in ('planned', 'partly'))
     then format('FAIL  setup   %s demand note(s) still have a hand-set Planned status (run migration 012)', (select count(*) from public.demand_notes where status_override in ('planned', 'partly')))
     else 'PASS  setup   no hand-set "Planned" statuses left — planned is worked out from jobs + manual quantities' end;
+
+  -- 013: jobs over several days are one job; corrections to completed units
+  probs := '{}';
+  if not exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'assignments' and column_name = 'work_minutes')
+     or not exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'assignments' and column_name = 'part_locked') then
+    probs := probs || 'assignments.work_minutes / part_locked missing'::text;
+  end if;
+  if to_regprocedure('public.apply_job_parts(jsonb, uuid[])') is null then probs := probs || 'function apply_job_parts missing'::text; end if;
+  if not exists (select 1 from pg_trigger tg where tg.tgrelid = 'public.assignments'::regclass and tg.tgconstraint <> 0 and tg.tgdeferrable) then
+    probs := probs || 'no one-part-per-day guard on assignments'::text;
+  end if;
+  if not exists (select 1 from pg_trigger tg where tg.tgrelid = 'public.demand_progress'::regclass and tg.tgconstraint <> 0 and tg.tgdeferrable) then
+    probs := probs || 'no "completed can''t go below 0" guard on demand_progress'::text;
+  end if;
+  res := res || case when cardinality(probs) = 0
+    then 'PASS  setup   jobs over several days: total work time on part 1, locked parts, one-part-per-day guard, save-all-parts function; completed below-0 guard (013 migration run)'
+    else 'FAIL  setup   run migration 013 — ' || array_to_string(probs, '; ') end;
+  res := res || case
+    when not exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'app_settings' and column_name = 'overflow_mode')
+      then 'FAIL  setup   "When a job runs past finish time" setting missing — run migration 013'
+    else format('PASS  setup   "When a job runs past finish time": %s',
+      coalesce((select case overflow_mode when 'continue' then 'continue next working day' when 'ask' then 'ask me' else 'allow overtime' end from public.app_settings where id = 1), 'continue next working day (default)')) end;
+  select count(*) into n from (
+    select 1 from public.assignments a group by coalesce(a.part_of, a.id), a.work_date having count(*) > 1) d;
+  res := res || case when n = 0 then 'PASS  setup   no job has two parts on the same day'
+    else format('FAIL  setup   %s job-day(s) have two or more parts of the same job — run supabase/tests/report_013_parts.sql, then cleanup_013_parts.sql', n) end;
+  select count(*) into n from public.assignments where part_of is not null and qty_done is not null;
+  res := res || case when n = 0 then 'PASS  setup   units done are recorded once per job (on part 1)'
+    else format('FAIL  setup   %s continued part(s) carry units done — run migration 013 again', n) end;
 
   res := res || format('%s  setup   viewer e-mail found (%s)', case when viewer_id is null then 'FAIL' else 'PASS' end, viewer_email);
   res := res || format('%s  setup   admin e-mail found (%s)',  case when admin_id  is null then 'FAIL' else 'PASS' end, admin_email);
@@ -478,6 +510,19 @@ begin
     delete from public.pump_model_stages;
     get diagnostics n = row_count;
     res := res || format('%s  viewer  cannot change production stages', case when n = 0 then 'PASS' else 'FAIL' end);
+    -- 013
+    begin
+      perform public.apply_job_parts(jsonb_build_array(jsonb_build_object('person_id', pid3, 'task_id', free_task, 'work_date', current_date)));
+      ok := false;
+    exception when insufficient_privilege then ok := true;
+    end;
+    res := res || format('%s  viewer  cannot save or move jobs over several days', case when ok then 'PASS' else 'FAIL' end);
+    update public.demand_progress set qty = qty + 1;
+    get diagnostics n = row_count;
+    ok := n = 0;
+    delete from public.demand_progress;
+    get diagnostics n = row_count;
+    res := res || format('%s  viewer  cannot edit or delete logged completed units', case when ok and n = 0 then 'PASS' else 'FAIL' end);
 
     execute 'reset role';
   end if;
@@ -683,6 +728,68 @@ begin
       res := res || format('%s  admin   job split over two days: deleting part 1 deletes part 2; pause for breaks is on by default',
         case when n = 0 and (select column_default from information_schema.columns where table_schema = 'public' and table_name = 'assignments' and column_name = 'pause_for_breaks') = 'true'
              then 'PASS' else 'FAIL' end);
+
+      -- 013: a job over two days saved in one step, moved and shortened without duplicates
+      rows_j := jsonb_build_array(
+        jsonb_build_object('person_id', pid3, 'task_id', free_task, 'work_date', current_date + 30, 'start_time', '15:00', 'end_time', '16:30', 'work_minutes', 180),
+        jsonb_build_object('person_id', pid3, 'task_id', free_task, 'work_date', current_date + 31, 'start_time', '08:30', 'end_time', '10:00', 'qty_done', 9));
+      job_h := public.apply_job_parts(rows_j);
+      select id into job_p from public.assignments where part_of = job_h;
+      select count(*) into n from public.assignments where coalesce(part_of, id) = job_h;
+      res := res || format('%s  admin   job over two days saved in one step: total work time on part 1, part 2 points at it',
+        case when n = 2 and (select work_minutes from public.assignments where id = job_h) = 180
+                  and (select qty_done is null and work_minutes is null from public.assignments where id = job_p) then 'PASS' else 'FAIL' end);
+      perform public.apply_job_parts(jsonb_build_array(
+        jsonb_build_object('id', job_h, 'work_date', current_date + 31),
+        jsonb_build_object('id', job_p, 'work_date', current_date + 32)));
+      select count(*) into n from public.assignments where coalesce(part_of, id) = job_h;
+      res := res || format('%s  admin   moving the job moves both parts (same rows, no duplicates)',
+        case when n = 2 and (select work_date from public.assignments where id = job_p) = current_date + 32 then 'PASS' else 'FAIL' end);
+      begin
+        perform public.apply_job_parts(jsonb_build_array(
+          jsonb_build_object('id', job_h, 'work_date', current_date + 33),
+          jsonb_build_object('person_id', pid3, 'task_id', free_task, 'work_date', current_date + 33)));
+        ok := false;
+      exception when unique_violation then ok := true;
+      end;
+      select count(*) into n from public.assignments where coalesce(part_of, id) = job_h;
+      res := res || format('%s  admin   saving two parts of one job on the same day is refused and nothing is saved',
+        case when ok and n = 2 and (select work_date from public.assignments where id = job_h) = current_date + 31 then 'PASS' else 'FAIL' end);
+      begin
+        insert into public.assignments (person_id, work_date, task_id, part_of) values (pid3, current_date + 32, free_task, job_h);
+        execute 'set constraints all immediate';
+        ok := false;
+      exception when unique_violation then ok := true;
+      end;
+      execute 'set constraints all deferred';
+      res := res || format('%s  admin   a second part on the same day is refused by the database', case when ok then 'PASS' else 'FAIL' end);
+      perform public.apply_job_parts(jsonb_build_array(jsonb_build_object('id', job_h, 'end_time', '17:00', 'work_minutes', null)), array[job_p]);
+      select count(*) into n from public.assignments where coalesce(part_of, id) = job_h;
+      res := res || format('%s  admin   shortening the job removes the part it no longer needs', case when n = 1 then 'PASS' else 'FAIL' end);
+
+      -- 013: corrections to completed units (note "RLS progress": 4 units done + 3 logged = 7 at out_task)
+      begin
+        insert into public.demand_progress (demand_id, task_id, qty, note, kind) values (other_note, out_task, -2, 'counted twice', 'correction') returning id into job_p;
+        insert into public.demand_progress (demand_id, task_id, qty, note, kind) values (other_note, out_task, 1, 'Adjusted from 5 to 6', 'adjust') returning id into job_h;
+        update public.demand_progress set qty = -3 where id = job_p;
+        delete from public.demand_progress where id = job_h;
+        execute 'set constraints all immediate';
+        ok := true;
+      exception when others then ok := false;
+      end;
+      execute 'set constraints all deferred';
+      res := res || format('%s  admin   corrections: negative entry, adjust, edit and delete a logged entry', case when ok then 'PASS' else 'FAIL' end);
+      begin
+        insert into public.demand_progress (demand_id, task_id, qty, kind) values (other_note, out_task, -100, 'correction');
+        execute 'set constraints all immediate';
+        ok := false;
+      exception when check_violation then ok := true;
+      end;
+      execute 'set constraints all deferred';
+      res := res || format('%s  admin   completed can''t go below 0', case when ok then 'PASS' else 'FAIL' end);
+      select count(*) into n from public.audit_log where changed_at >= now() and table_name = 'demand_progress'
+        and ((action = 'update' and old_data ->> 'qty' = '-2' and new_data ->> 'qty' = '-3') or (action = 'delete' and old_data ->> 'kind' = 'adjust'));
+      res := res || format('%s  admin   corrections written to the change log (who, old → new)', case when n >= 2 then 'PASS' else 'FAIL' end);
 
       begin
         insert into public.audit_log (table_name, action) values ('x', 'insert');

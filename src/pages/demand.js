@@ -7,6 +7,7 @@ import { auth } from '../auth.js';
 import { toISO, fromISO, today, mondayOf, fmtDayShort, fmtDate } from '../dates.js';
 import {
   demandState, dueWords, sortByUrgency, suggestDate, legacyStatus, SECTIONS, STATUS_LABEL, nextStageToPlan,
+  logCheck, adjustEntry, editCheck, deleteCheck, stageOfLog,
 } from '../demandModel.js';
 import { loadTodos, todoSections, editTodo } from './todos.js';
 
@@ -136,15 +137,26 @@ function stageRows(x) {
     h('span', { class: 'st-num', title: plannedTitle(st) }, `${st.planned}${s.needed != null ? `/${s.needed}` : ''}`, st.done ? h('span', { class: 'st-done' }, ` · ${st.done} done`) : null))));
 }
 
-/** "Tue 25 Nov · +3 · Prince" (newest first, 3 shown). */
-function logHistory(x, ctx) {
+/** "Tue 25 Nov · +3 · Prince" (newest first, 3 shown, the rest on request); admin: Edit · Delete each entry. */
+const openLogs = new Set();
+function logHistory(x, ctx, onChanged) {
   const logs = x.state.logs || [];
   if (!logs.length) return null;
   const stageName = (id) => ctx.taskById.get(id)?.name;
-  return h('ul', { class: 'dc-logs', 'aria-label': 'Completed units logged' }, logs.slice(0, 3).map((l) => h('li', {},
-    `${fmtDayShort(fromISO(l.work_date))} · +${l.qty} · ${ctx.nameOf(l.created_by).split(' ')[0]}`,
-    l.task_id && stageName(l.task_id) && x.state.stages.length > 1 ? ` · ${stageName(l.task_id)}` : '', l.note ? h('span', { class: 'muted' }, ` — ${l.note}`) : null)),
-  logs.length > 3 ? h('li', { class: 'muted' }, `+ ${logs.length - 3} earlier`) : null);
+  const all = openLogs.has(x.note.id);
+  const shown = all ? logs : logs.slice(0, 3);
+  const canFix = auth.isAdmin && ctx.progressReady && onChanged;
+  const list = h('ul', { class: 'dc-logs', 'aria-label': 'Completed units logged' }, shown.map((l) => h('li', { class: l.qty < 0 ? 'log-neg' : '', 'data-log': l.id },
+    h('span', {}, `${fmtDayShort(fromISO(l.work_date))} · ${l.qty > 0 ? '+' : '−'}${Math.abs(l.qty)} · ${ctx.nameOf(l.created_by).split(' ')[0]}`,
+      l.task_id && stageName(l.task_id) && x.state.stages.length > 1 ? ` · ${stageName(l.task_id)}` : '', l.note ? h('span', { class: 'muted' }, ` — ${l.note}`) : null),
+    l.kind && l.kind !== 'log' ? h('span', { class: 'log-kind' }, l.kind === 'adjust' ? '(adjusted)' : '(correction)') : null,
+    canFix ? h('button', { type: 'button', class: 'log-act', 'aria-label': `Edit entry ${l.qty}`, onclick: () => editLog(x, ctx, l, onChanged) }, 'Edit') : null,
+    canFix ? h('button', { type: 'button', class: 'log-act', 'aria-label': `Delete entry ${l.qty}`, onclick: () => deleteLog(x, ctx, l, onChanged) }, 'Delete') : null)),
+  logs.length > 3 ? h('li', { class: 'muted' }, h('button', { type: 'button', class: 'log-act', onclick: (e) => {
+    if (all) openLogs.delete(x.note.id); else openLogs.add(x.note.id);
+    e.currentTarget.closest('.dc-logs').replaceWith(logHistory(x, ctx, onChanged));
+  } }, all ? 'Show fewer' : `+ ${logs.length - 3} earlier`)) : null);
+  return list;
 }
 
 function dueLine(note, ctx, status, state) {
@@ -262,39 +274,132 @@ export function editDemand(ctx, note, onSaved) {
 }
 
 // ------------------------------------------------------------------ completed units & manual planned (admin)
-/** "+ Log completed": units done outside a tracked job (quantity, date, stage, note). */
+/** Insert a progress entry (kind needs migration 013; before it, plain entries only). */
+async function insertProgress(row) {
+  let r = await supabase.from('demand_progress').insert(row).select('id').single();
+  if (r.error && /kind/.test(r.error.message || '')) { const { kind: _k, ...rest } = row; r = await supabase.from('demand_progress').insert(rest).select('id').single(); }
+  return r;
+}
+
+/**
+ * "+ Log completed": units done outside a tracked job. Add (or correct with a negative number,
+ * e.g. −3 "counted twice"), or set a stage's total directly (recorded as the difference).
+ * The notice offers Undo. Completed can't go below 0.
+ */
 function logCompleted(x, ctx, onSaved) {
   const s = x.state;
-  const qty = h('input', { type: 'number', min: 1, step: 1, inputmode: 'numeric', required: true });
+  const qty = h('input', { type: 'number', step: 1, inputmode: 'numeric', required: true });
   const date = h('input', { type: 'date', value: ctx.todayISO });
   const stage = h('select', {}, s.stages.map((st, i) => h('option', { value: st.taskId, selected: i === s.stages.length - 1 },
     `${st.name}${i === s.stages.length - 1 ? ' (last stage)' : ''} — ${st.done} done`)));
   const note = h('input', { type: 'text', maxlength: 200, placeholder: 'Optional, e.g. finished on the Saturday shift' });
+  const modeAdd = h('input', { type: 'radio', name: 'logmode', value: 'add', checked: true });
+  const modeSet = h('input', { type: 'radio', name: 'logmode', value: 'set' });
+  const qtyField = field('Quantity done', qty, 'Negative to correct, e.g. −3 (counted twice).');
+  const hint = h('p', { class: 'muted small' });
   const error = h('p', { class: 'form-error', role: 'alert' });
+  const sync = () => {
+    const st = s.stages.find((v) => v.taskId === stage.value);
+    qtyField.querySelector('label').textContent = modeSet.checked ? `New total at ${st?.name || 'this stage'}` : 'Quantity done';
+    qtyField.querySelector('.hint').textContent = modeSet.checked ? `Now ${st?.done ?? 0} done — the difference is recorded as an “adjusted” entry.` : 'Negative to correct, e.g. −3 (counted twice).';
+    hint.textContent = s.needed != null ? `${s.completed} of ${s.needed} done so far (last stage).` : `${s.completed} done so far.`;
+  };
+  for (const el of [modeAdd, modeSet, stage]) el.addEventListener('change', sync);
   openModal({
     title: `Log completed · ${noteText(x.note, ctx)}`,
     body: h('div', { class: 'stack' },
-      h('div', { class: 'form-grid form-grid-3' }, field('Quantity done', qty), field('Date', date), field('Stage', stage)),
+      h('div', { class: 'seg-radios', role: 'radiogroup', 'aria-label': 'How' },
+        h('label', { class: 'check' }, modeAdd, h('span', {}, 'Add or correct')),
+        h('label', { class: 'check' }, modeSet, h('span', {}, 'Set the total (adjust)'))),
+      h('div', { class: 'form-grid form-grid-3' }, qtyField, field('Date', date), field('Stage', stage)),
       field('Note', note),
-      h('p', { class: 'muted small' }, s.needed != null ? `${s.completed} of ${s.needed} done so far (last stage).` : `${s.completed} done so far.`),
+      hint,
       error),
     actions: [{ label: 'Cancel' }, {
       label: 'Log', variant: 'primary',
       onClick: async () => {
-        const q = Number(qty.value);
-        if (!Number.isInteger(q) || q < 1) { error.textContent = 'Enter how many were completed (1 or more).'; return false; }
-        const st = s.stages.find((x2) => x2.taskId === stage.value);
-        if (s.needed != null && st && st.done + q > s.needed
+        error.textContent = '';
+        const n = Number(qty.value);
+        const st = s.stages.find((v) => v.taskId === stage.value);
+        let q = n; let kind = n < 0 ? 'correction' : 'log'; let text = note.value.trim() || null;
+        if (modeSet.checked) {
+          const a = adjustEntry(s, stage.value, n);
+          if (a.error) { error.textContent = a.error; return false; }
+          q = a.delta; kind = 'adjust'; text = [a.note, text].filter(Boolean).join(' — ');
+        } else {
+          const msg = logCheck(s, stage.value, n);
+          if (msg) { error.textContent = msg; return false; }
+        }
+        if (q > 0 && s.needed != null && st && st.done + q > s.needed
             && !(await confirmDialog('More than needed?', `That makes ${st.done + q} done at ${st.name}, but only ${s.needed} are needed. Log it anyway?`, 'Log anyway', 'primary'))) return false;
-        const { error: err } = await supabase.from('demand_progress').insert({ demand_id: x.note.id, task_id: stage.value || null, qty: q, work_date: date.value || ctx.todayISO, note: note.value.trim() || null });
+        const { data: row, error: err } = await insertProgress({ demand_id: x.note.id, task_id: stage.value || null, qty: q, work_date: date.value || ctx.todayISO, note: text, kind });
         if (reportError(err, 'Logging completed')) return false;
-        toast(`Logged +${q} completed.`, 'success');
+        toast(kind === 'adjust' ? `${st?.name || 'Stage'} set to ${n} done.` : `Logged ${q > 0 ? '+' : '−'}${Math.abs(q)} completed.`, 'success', [{
+          label: 'Undo',
+          onClick: async () => {
+            const { error: e2 } = await supabase.from('demand_progress').delete().eq('id', row.id);
+            if (!reportError(e2, 'Undo')) { toast('Undone.', 'success'); onSaved(); }
+          },
+        }]);
+        onSaved();
+        return true;
+      },
+    }],
+  });
+  sync();
+  qty.focus();
+}
+
+/** Edit one logged entry (quantity, date, stage, note). */
+function editLog(x, ctx, log, onSaved) {
+  const s = x.state;
+  const qty = h('input', { type: 'number', step: 1, inputmode: 'numeric', value: log.qty });
+  const date = h('input', { type: 'date', value: log.work_date });
+  const cur = stageOfLog(s, log);
+  const stage = h('select', {}, s.stages.map((st) => h('option', { value: st.taskId, selected: st.taskId === cur }, st.name)));
+  const note = h('input', { type: 'text', maxlength: 200, value: log.note || '' });
+  const error = h('p', { class: 'form-error', role: 'alert' });
+  openModal({
+    title: 'Edit logged entry',
+    body: h('div', { class: 'stack' },
+      h('div', { class: 'form-grid form-grid-3' }, field('Quantity', qty, 'Negative = a correction.'), field('Date', date), field('Stage', stage)),
+      field('Note', note), error),
+    actions: [{ label: 'Cancel' }, {
+      label: 'Save', variant: 'primary',
+      onClick: async () => {
+        const n = Number(qty.value);
+        const msg = editCheck(s, log, n, stage.value);
+        if (msg) { error.textContent = msg; return false; }
+        const body = { qty: n, work_date: date.value || log.work_date, task_id: stage.value || null, note: note.value.trim() || null };
+        if (log.kind !== undefined && log.kind !== 'adjust') body.kind = n < 0 ? 'correction' : 'log';
+        const { error: err } = await supabase.from('demand_progress').update(body).eq('id', log.id);
+        if (reportError(err, 'Saving')) return false;
+        toast('Entry saved.', 'success', [{ label: 'Undo', onClick: async () => {
+          const { error: e2 } = await supabase.from('demand_progress').update({ qty: log.qty, work_date: log.work_date, task_id: log.task_id, note: log.note, ...(log.kind !== undefined ? { kind: log.kind } : {}) }).eq('id', log.id);
+          if (!reportError(e2, 'Undo')) onSaved();
+        } }]);
         onSaved();
         return true;
       },
     }],
   });
   qty.focus();
+}
+
+/** Delete one logged entry (asks first). */
+async function deleteLog(x, ctx, log, onSaved) {
+  const msg = deleteCheck(x.state, log);
+  if (msg) { toast(`Can’t delete: ${msg}`, 'error'); return; }
+  const what = `${log.qty > 0 ? '+' : '−'}${Math.abs(log.qty)} on ${fmtDayShort(fromISO(log.work_date))}`;
+  if (!(await confirmDialog('Delete this entry?', `Delete “${what}”${log.note ? ` (${log.note})` : ''}? The completed total goes ${log.qty > 0 ? 'down' : 'up'} by ${Math.abs(log.qty)}. The change history keeps a record.`))) return;
+  const { error } = await supabase.from('demand_progress').delete().eq('id', log.id);
+  if (reportError(error, 'Deleting')) return;
+  const { id: _i, created_at: _c, updated_at: _u, updated_by: _ub, ...again } = log;
+  toast('Entry deleted.', 'success', [{ label: 'Undo', onClick: async () => {
+    const { error: e2 } = await insertProgress(again);
+    if (!reportError(e2, 'Undo')) onSaved();
+  } }]);
+  onSaved();
 }
 
 /** "Edit planned": manual planned quantity per stage (work planned outside the planner). */
@@ -373,7 +478,7 @@ export function noteCard(x, ctx, { onChanged, onSamePage, compact = false } = {}
     h('div', { class: 'dc-meta' }, priorityBadge(n.priority), h('span', { class: 'muted small' }, attribution(n, ctx))),
     comment,
     s.jobs.length ? h('ul', { class: 'dc-jobs', 'aria-label': 'Linked jobs' }, s.jobs.map((a) => h('li', {}, jobLine(a, ctx)))) : null,
-    logHistory(x, ctx),
+    logHistory(x, ctx, onChanged),
     h('div', { class: 'dc-actions' },
       planBtn,
       auth.isAdmin && ctx.progressReady && (n.pump_model_id || n.any_pump) ? h('button', { class: 'btn btn-sm', onclick: () => logCompleted(x, ctx, onChanged) }, '+ Log completed') : null,

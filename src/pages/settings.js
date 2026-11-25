@@ -11,21 +11,50 @@ export async function renderSettings(main, ctx) {
   const typesCard = h('section', { class: 'card' });
   const equipCard = h('section', { class: 'card' });
   const testCard = h('section', { class: 'card' });
+  const plannerCard = h('section', { class: 'card', id: 'settings-planner' });
   mount(main,
     h('h1', { class: 'page-title' }, 'Settings'),
-    h('div', { class: 'stack-lg' }, hoursCard, modelsCard, typesCard, tasksCard, testCard, equipCard),
+    h('div', { class: 'stack-lg' }, hoursCard, plannerCard, modelsCard, typesCard, tasksCard, testCard, equipCard),
   );
   const { data: areas } = await supabase.from('test_areas').select('id, name, active').order('sort_order').order('name');
   areaList = areas || [];
   await loadStageCtx();
   await Promise.all([
     renderTestAreas(testCard, () => renderSettings(main, ctx)),
+    renderPlannerSettings(plannerCard),
     renderPatterns(hoursCard, ctx),
     renderRefList(modelsCard, MODELS),
     renderRefList(typesCard, BUILD_TYPES),
     renderRefList(tasksCard, TASKS),
     renderRefList(equipCard, EQUIPMENT),
   ]);
+}
+
+// ------------------------------------------------------------ planner
+export const OVERFLOW = {
+  continue: ['Continue next working day', 'Split it automatically onto the person’s next working day(s) — skipping days off, absences and weekends — and show a notice with Undo.'],
+  ask: ['Ask me', 'Show the choices in the job form: continue next working day, keep as overtime, or shorten.'],
+  overtime: ['Allow overtime', 'Keep it on one day past the person’s finish time (you can still choose “Continue next working day” in the form).'],
+};
+async function renderPlannerSettings(card) {
+  const { data, error } = await supabase.from('app_settings').select('overflow_mode').eq('id', 1).maybeSingle();
+  if (error) {   // before migration 013
+    mount(card, h('h2', {}, 'Planner'), h('p', { class: 'muted' }, '“When a job runs past finish time” arrives with migration 013 (see README).'));
+    return;
+  }
+  const cur = data?.overflow_mode || 'continue';
+  const sel = h('select', { 'aria-describedby': 'overflow-hint' }, Object.entries(OVERFLOW).map(([k, [label]]) => h('option', { value: k, selected: k === cur }, label)));
+  const hint = h('p', { class: 'muted small', id: 'overflow-hint' }, OVERFLOW[cur][1]);
+  sel.addEventListener('change', async () => {
+    hint.textContent = OVERFLOW[sel.value][1];
+    const { error: err } = await supabase.from('app_settings').update({ overflow_mode: sel.value }).eq('id', 1);
+    if (!reportError(err, 'Saving')) toast(`When a job runs past finish time: ${OVERFLOW[sel.value][0].toLowerCase()}.`, 'success');
+  });
+  mount(card,
+    h('h2', {}, 'Planner'),
+    field('When a job runs past finish time', sel),
+    hint,
+    h('p', { class: 'muted small' }, 'A job continued over several days stays ONE job: editing any part opens the whole job, and moving it moves every part.'));
 }
 
 // ------------------------------------------------------------ work patterns

@@ -48,9 +48,11 @@ export function demandState(note, links, { taskById, todayISO, stagesByModel = n
   const stages = stageIds.map((tid) => {
     const plannedJobs = roots.filter((a) => a.task_id === tid).reduce((t, a) => t + (a.qty_target || 0), 0);
     const plannedManual = myManual.filter((m) => m.task_id === tid).reduce((t, m) => t + (m.qty || 0), 0);
-    const doneJobs = mine.filter((a) => a.task_id === tid).reduce((t, a) => t + (a.qty_done || 0), 0);
+    // units done count once per job (part 1); logged entries may be corrections (negative)
+    const doneJobs = roots.filter((a) => a.task_id === tid).reduce((t, a) => t + (a.qty_done || 0), 0);
     const doneLogged = myLogs.filter((l) => (l.task_id || last) === tid).reduce((t, l) => t + (l.qty || 0), 0);
-    return { taskId: tid, name: taskById.get(tid)?.name || 'Stage', plannedJobs, plannedManual, planned: plannedJobs + plannedManual, doneJobs, doneLogged, done: doneJobs + doneLogged };
+    return { taskId: tid, name: taskById.get(tid)?.name || 'Stage', plannedJobs, plannedManual, planned: plannedJobs + plannedManual, doneJobs, doneLogged,
+      done: Math.max(0, doneJobs + doneLogged) }; // never below 0
   });
   const lastStage = stages.at(-1) || { planned: 0, done: 0, plannedJobs: 0, plannedManual: 0, doneJobs: 0, doneLogged: 0 };
   const planned = lastStage.planned;
@@ -79,6 +81,44 @@ export function demandState(note, links, { taskById, todayISO, stagesByModel = n
     logs: myLogs,
   };
 }
+
+// ------------------------------------------------------------------ completed: corrections
+/** Stage a log entry counts at (entries without a stage count at the last stage). */
+export const stageOfLog = (state, log) => log.task_id || state.stages.at(-1)?.taskId || null;
+/** Completed at a stage, before the floor at 0 (jobs' units done + logged entries). */
+export const rawDone = (state, taskId) => { const st = state.stages.find((x) => x.taskId === taskId); return st ? st.doneJobs + st.doneLogged : 0; };
+
+/**
+ * Check a change to the completed units of a stage. `changes` = [{ taskId, delta }].
+ * → null when fine, else a message ("Completed can't go below 0 — Quality testing has 2 done").
+ */
+export function belowZero(state, changes) {
+  const by = new Map();
+  for (const c of changes) by.set(c.taskId, (by.get(c.taskId) || 0) + c.delta);
+  for (const [taskId, delta] of by) {
+    const now = rawDone(state, taskId);
+    if (now + delta < 0) {
+      const st = state.stages.find((x) => x.taskId === taskId);
+      return `Completed can’t go below 0 — ${st?.name || 'this stage'} has ${Math.max(0, now)} done.`;
+    }
+  }
+  return null;
+}
+/** "+ Log completed" with a quantity (a negative quantity is a correction). */
+export const logCheck = (state, taskId, qty) => (!Number.isInteger(qty) || qty === 0 ? 'Enter a whole number, not 0 (negative to correct).' : belowZero(state, [{ taskId, delta: qty }]));
+/** "Adjust": set a stage's completed total → the entry to record (the difference). */
+export function adjustEntry(state, taskId, target) {
+  if (!Number.isInteger(target) || target < 0) return { error: 'The new total must be a whole number, 0 or more.' };
+  const now = Math.max(0, rawDone(state, taskId));
+  const delta = target - now;
+  if (!delta) return { error: `${state.stages.find((x) => x.taskId === taskId)?.name || 'This stage'} already has ${now} done.` };
+  return { delta, note: `Adjusted from ${now} to ${target}` };
+}
+/** Editing an entry: old quantity / stage out, new ones in. */
+export const editCheck = (state, log, qty, taskId) => (!Number.isInteger(qty) || qty === 0 ? 'Enter a whole number, not 0.'
+  : belowZero(state, [{ taskId: stageOfLog(state, log), delta: -log.qty }, { taskId, delta: qty }]));
+/** Deleting an entry. */
+export const deleteCheck = (state, log) => belowZero(state, [{ taskId: stageOfLog(state, log), delta: -log.qty }]);
 
 /** The first stage that still needs planning (for "Plan this"): { taskId, qty } or null. */
 export function nextStageToPlan(state) {

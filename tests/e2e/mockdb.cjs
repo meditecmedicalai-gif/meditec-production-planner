@@ -56,6 +56,29 @@ module.exports = function makeHandler(role, db) {
     if (u.pathname.includes('/auth/v1/token')) return json(200, { access_token: 'x.eyJzdWIiOiJ1MSJ9.x', token_type:'bearer', expires_in:3600, expires_at:Math.floor(Date.now()/1000)+3600, refresh_token:'r', user:{id:'u1',email:'p@x.com',aud:'authenticated',role:'authenticated'} });
     if (u.pathname.includes('/auth/v1/')) return json(200, {});
     const table = u.pathname.split('/rest/v1/')[1];
+    if (table === 'rpc/apply_job_parts') {
+      // mirrors public.apply_job_parts (migration 013): all parts of a job in one step
+      if (role !== 'admin') return json(403, { code: '42501', message: 'Only the admin can change the plan.' });
+      const { p_rows: rowsIn, p_remove: remove = [] } = JSON.parse(req.postData());
+      const snapshot = JSON.stringify(db.assignments);
+      let head = null;
+      for (const [i, r] of rowsIn.entries()) {
+        let rec;
+        if (r.id) { rec = db.assignments.find((a) => a.id === r.id); if (!rec) return json(409, { code: '40001', message: 'Part no longer exists' });
+          const { id: _i, part_of: _p, created_at: _c, ...rest } = r; Object.assign(rec, rest); }
+        else { const { part_of: _p, ...rest } = r; rec = { id: uid(), created_at: new Date(Date.now() + seq).toISOString(), any_pump: false, pump_mix: null, recurring_id: null, recurring_date: null,
+          recurring_detached: false, pause_for_breaks: true, part_locked: false, background: null, equipment_id: null, end_date: null, notes: null, qty_target: null, ...rest }; db.assignments.push(rec); }
+        if (i === 0) { rec.part_of = null; head = rec.id; } else { rec.part_of = head; rec.work_minutes = null; rec.qty_done = null; }
+        rec.end_date = null;
+      }
+      db.assignments = db.assignments.filter((a) => !remove.includes(a.id) || a.id === head);
+      const mine = db.assignments.filter((a) => (a.part_of || a.id) === head);
+      if (new Set(mine.map((a) => a.work_date)).size !== mine.length) {
+        db.assignments = JSON.parse(snapshot);
+        return json(409, { code: '23505', message: 'This job would have two parts on the same day — nothing was saved.' });
+      }
+      return json(200, head);
+    }
     if (table === 'rpc/extend_recurring_jobs') {
       if (role !== 'admin') return json(200, 0);
       return json(200, module.exports.generate(db));
@@ -110,6 +133,7 @@ module.exports = function makeHandler(role, db) {
     if (m === 'DELETE') { const hit = filt(rows, params);
       for (const r of hit) { if (db.assignments.some(a => a.person_id === r.id || a.pump_model_id === r.id || a.task_id === r.id)) return json(409, { code:'23503', message:'violates foreign key constraint' }); }
       if (table === 'todos') for (const a of db.assignments) if (hit.some(r => r.id === a.todo_id)) a.todo_id = null;
+      if (table === 'assignments') { const gone = new Set(hit.map(r => r.id)); hit.push(...rows.filter(r => r.part_of && gone.has(r.part_of) && !gone.has(r.id))); } // parts go with part 1
       db[table] = rows.filter(r => !hit.includes(r)); return json(204); }
   };
 };

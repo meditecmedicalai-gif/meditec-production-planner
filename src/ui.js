@@ -38,16 +38,28 @@ export function mount(container, ...children) {
 
 // ---------------------------------------------------------------- toasts
 let toastHost;
-export function toast(message, type = 'info') {
+/** A short message. `actions` ([{ label, onClick }]) add links such as "Undo · Edit" (shown longer). */
+export function toast(message, type = 'info', actions = null) {
   if (!toastHost) {
     toastHost = h('div', { class: 'toast-host', role: 'status', 'aria-live': 'polite' });
     document.body.append(toastHost);
   }
-  const t = h('div', { class: `toast toast-${type}` }, message);
+  const t = h('div', { class: `toast toast-${type}${actions?.length ? ' toast-actions' : ''}` }, h('span', {}, message));
+  if (actions?.length) {
+    t.append(h('span', { class: 'toast-links' }, actions.map((a, i) => [i ? ' · ' : ' ', h('button', {
+      type: 'button', class: 'toast-link',
+      onclick: async () => { t.remove(); await a.onClick(); },
+    }, a.label)])));
+  }
   toastHost.append(t);
   while (toastHost.children.length > 3) toastHost.firstChild.remove();
-  setTimeout(() => t.classList.add('toast-hide'), 3500);
-  setTimeout(() => t.remove(), 4000);
+  const life = actions?.length ? 12000 : 3500;
+  let timer = setTimeout(() => t.classList.add('toast-hide'), life);
+  // keep it while the mouse is over it (time to click Undo)
+  t.addEventListener('mouseenter', () => { clearTimeout(timer); t.classList.remove('toast-hide'); });
+  t.addEventListener('mouseleave', () => { timer = setTimeout(() => t.classList.add('toast-hide'), 2500); });
+  t.addEventListener('transitionend', () => { if (t.classList.contains('toast-hide')) t.remove(); });
+  setTimeout(() => { if (!t.matches(':hover')) t.remove(); }, life + 600);
 }
 
 /** Show a friendly message for a Supabase error and return true if there was one. */

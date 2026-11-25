@@ -67,6 +67,7 @@ function fieldLabel(table, key) {
     pattern: 'Repeats', weekdays: 'Days', interval_weeks: 'Every … weeks', title: 'Name', person_id: 'Person', max_pumps: 'Max pumps', skip_date: 'Skipped date',
     owner_id: 'For', due_date: 'Due', details: 'Details', checklist: 'Checklist', qty_done: 'Units done', todo_id: 'To-do',
     demand_id: 'Demand note', qty: 'Quantity', position: 'Position', category: 'Category', note: 'Note', status_override: 'Status (by hand)',
+    work_minutes: 'Total work time', part_locked: 'Part times set by hand', part_of: 'Part of job', kind: 'Entry', overflow_mode: 'When a job runs past finish time',
   })[key] || key;
 }
 function fieldValue(key, v, L) {
@@ -82,6 +83,10 @@ function fieldValue(key, v, L) {
     case 'todo_id': case 'demand_id': return 'linked';
     case 'checklist': return Array.isArray(v) ? `${v.filter((x) => x.done).length} / ${v.length} ticked` : '—';
     case 'category': return v === 'office' ? 'Office / non-production' : 'Production';
+    case 'work_minutes': return `${Math.floor(v / 60)}h${v % 60 ? ` ${v % 60}m` : ''}`;
+    case 'part_locked': return v ? 'yes' : 'no';
+    case 'part_of': return 'linked';
+    case 'kind': return ({ log: 'logged', correction: 'correction', adjust: 'adjusted total' })[v] || v;
     case 'start_time': case 'end_time': return hm(v);
     case 'equipment_id': return L.equipment.get(v) || '(deleted equipment)';
     case 'any_pump': case 'recurring_detached': return v ? 'yes' : 'no';
@@ -125,7 +130,7 @@ function describe(table, row, L) {
     case 'pump_model_stages':
       return `${v('pump_model_id')} · stage ${row.position}: ${v('task_id')}`;
     case 'demand_progress':
-      return [`+${row.qty} done`, row.task_id && v('task_id'), row.work_date && v('work_date'), row.note && `“${row.note}”`].filter(Boolean).join(' · ');
+      return [`${row.qty > 0 ? '+' : '−'}${Math.abs(row.qty)} done${row.kind && row.kind !== 'log' ? ` (${row.kind === 'adjust' ? 'adjusted' : 'correction'})` : ''}`, row.task_id && v('task_id'), row.work_date && v('work_date'), row.note && `“${row.note}”`].filter(Boolean).join(' · ');
     case 'demand_stage_plans':
       return `${v('task_id')} · planned (manual) ${row.qty}`;
     case 'work_pattern_days':
