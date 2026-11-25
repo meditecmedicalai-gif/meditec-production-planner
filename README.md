@@ -42,7 +42,11 @@ Live site (once deployed): `https://meditecmedicalai-gif.github.io/meditec-produ
    [`008_work_hours.sql`](supabase/migrations/008_work_hours.sql) (individual working hours: work patterns,
    per-person hours and one-off changes; "one at a time" capacity mode for the Medicare / Mediflex bench;
    recurring jobs skip non-working days). It ends with `notify pgrst, 'reload schema'` so the website sees the
-   new tables at once — the SQL Editor then shows *Success. No rows returned*, which is expected.
+   new tables at once — the SQL Editor then shows *Success. No rows returned*, which is expected. Then
+   [`009_job_timing.sql`](supabase/migrations/009_job_timing.sql) (jobs pause for breaks; jobs continued on the
+   next working day; clears meaningless "Ends on" dates). Optionally run
+   [`supabase/tests/check_multiday_jobs.sql`](supabase/tests/check_multiday_jobs.sql) to review jobs whose
+   "Ends on" looks like a mistake.
 
 ### 3. Lock down sign-in
 1. **Authentication → Sign In / Providers** (called *Providers* in some versions):
@@ -203,8 +207,9 @@ Each person has their own start, finish, break and lunch.
 - **Used everywhere**: the Day timeline (each row shows that person's window, time outside it greyed, their own
   break and lunch), the busy / free bar and "Xh busy · Yh free", *Who's free now*, free-gap clicks, the job
   form's mini timeline and the Excel export.
-- **Warnings** (never blocking): ⚠ a job on a non-working day or outside the person's hours (asks *Save anyway?*);
-  ⏰ a job that runs across their break or lunch — just a note, as people often take it during a job.
+- **Checked as you type** (see *Job timing* below): the job form shows one line such as
+  "Irwin · Mon 10:00–12:15 (incl. 15 min break) · within hours ✓", and offers choices when a job runs past their
+  finish or starts before their start. ⚠ a job on a non-working day or outside their hours still asks *Save anyway?*.
 - **Non-working days** are shaded in the week grid ("Not working"), and **recurring jobs skip them**.
 - Viewers see everyone's hours (People page, planner) but can't change them.
 
@@ -221,7 +226,8 @@ Pumps are tested several at a time, so the planner adds up the pumps on test tha
   instead of 8/1 (hover or tab to it for "8 pumps · ~15 min each"), and only **overlapping jobs** on the bench are flagged.
 - Capacity pills always fit their own day column: they wrap onto two lines rather than spill into the next day, and
   the occupancy graph sits on its own line. `npm run test:layout` checks this at 1280 / 1440 / 1920 px and on a phone,
-  in light and dark mode (needs Playwright: `npm i -D playwright && npx playwright install chromium`).
+  in light and dark mode, and `npm run test:timing` checks job timing (both need Playwright:
+  `npm i -D playwright && npx playwright install chromium`).
 - **Occupancy graph**: hover (or tab to) a Quality Check pill in the capacity row to see pumps on test across the
   day against the limit, e.g. "08:30–11:00: 7 · 11:00–13:30: 2 · 13:30–16:00: 7", and the free places. The Day
   timeline has the same graph as a row lined up with the time columns, plus a bench row.
@@ -284,11 +290,7 @@ be for "Any / mixed pump".
 - **Build types** (Settings) tag each pump job, e.g. Production, Trial, Rental, Customer, each with its
   own colour. The default type (Production) is pre-selected and is used automatically if a pump job is
   saved without one. Tasks that don't need a pump (Training, Stock room / 5S, Other) can have no type.
-- **Times, overnight and multi-day jobs** (optional, under *Timing & equipment*): give a start and end
-  time. If the end time is earlier than the start (e.g. 16:00 → 08:00) the job runs overnight; set
-  **Ends on** for jobs over several days. The job appears on every day it covers ("16:00 → 08:00 next
-  day" on the first day, "cont. from Mon 16:00 · ends 08:00" after). Quantities are counted once, on the
-  start day. No times = all day.
+- **Times, overnight and multi-day jobs** (optional, under *Timing & equipment*) — see *Job timing* below.
 - **Background / unattended jobs** (e.g. soak / burn-in tests) look clearly different from attended work:
   attended jobs are solid cards; background jobs are indented, hatched, outlined with a dashed border, carry a
   dark **⏱ Background** label and are listed under *Running in the background*. A task can be marked background in Settings; each job can
@@ -301,13 +303,35 @@ be for "Any / mixed pump".
   striped = background, with text such as "4h busy · 3h 15m free" ("All free", "Fully booked", "1 no time").
   Jobs in each cell are sorted by start time, with the **time first in bold**.
 
+## Job timing
+Under *Timing & equipment* in the job form:
+- **Start time** — new jobs start at the person's **next free slot** within their own hours (pattern, personal
+  changes and one-off changes for that day). Clear it for a job with no times (= all day).
+- **End time or Work time** — switch between them. *Work time* takes e.g. `1h 30m`, `2h`, `45m` or `1:15`.
+  With only a start, the job runs until their next job (or the end of their day).
+- **Pause for breaks** (attended jobs, on by default) — work stops for the person's break and lunch, so the end
+  moves out: Irwin 10:00 + 2h work with a break 10:30–10:45 → **"Ends 12:15 (incl. 15 min break)"**. Busy / free,
+  the Day timeline (the break shows inside the job block), the export (Duration = work time) and test capacity
+  all use the adjusted times. **Background jobs don't pause** — they run through breaks.
+- **One summary line**, updated as you type: "Irwin · Mon 10:00–12:15 (incl. break) · within hours ✓".
+  - Runs past their finish → **Continue next working day** (split automatically, e.g. 15:30–16:30 today then
+    08:30–09:30 on their next working day, skipping non-working days and absences — saved as parts, shown
+    "↪ part 1 of 2"; the quantity counts once), **Keep as is (overtime)**, or **Shorten to end of day**.
+  - Starts before their start → **Move to 08:30** (keeps the length).
+- **Runs over several days** — tick it to show **Ends on** (with a *Clear* button). Hidden otherwise, so a stray
+  key in a date box can't turn a 10:00–11:00 job into "10:00 → 11:00 next day". Attended multi-day jobs only count
+  the person's **working hours each day**, not overnight; background ones run continuously. An end time earlier
+  than the start (e.g. 16:00 → 08:00) still means overnight. The job appears on every day it covers ("16:00 → 08:00
+  next day" on the first day, "cont. from Mon 16:00 · ends 08:00" after). Quantities count once, on the start day.
+
 ## Excel export
 **Export to Excel** on the planner and on Today (admin and viewer). Choose the dates — this week, last week, the
 week shown, this month or custom from–to — and optionally specific people. The browser builds the .xlsx
 (no data leaves Supabase), named like `Pump room plan 2026-11-23 to 2026-11-27.xlsx`:
 - **Timesheet** — one row per job per day per person: Date, Person, Start, End, Duration (hours), Task, Pump model
   (or Any / mixed with the actual pumps), Quantity, Build type, Station, Attended / Background, Recurring, Notes.
-  Overnight jobs are split by day. **Free** rows fill the gaps within each person's own hours, plus **Break** and
+  Overnight and multi-day jobs are split by day; Duration is work time (breaks the job pauses for are their own
+  rows, and the note says "incl. 15 min break"). **Free** rows fill the gaps within each person's own hours, plus **Break** and
   **Lunch** rows (and *Absent* / *Not a working day*). The total row uses SUBTOTAL, so it follows your filters.
 - **Absences** — Date, Person, Type, Hours (their working hours that day), Notes.
 - **Summary by person** — hours per task, total busy, free, break & lunch and absent hours (each person's own hours).
@@ -387,3 +411,5 @@ This is a planning aid, not a controlled QMS record.
 9. ✅ Test capacity by station (Quality Check), Day timeline, busy / free time, "Who's free now"
 10. ✅ Individual working hours (patterns, per person, one-off), capacity fixes (peak, untimed, one-at-a-time
     bench, occupancy graph), Excel export
+11. ✅ Job timing: "Ends on" only for multi-day jobs, pause for breaks, work time, each person's start / finish
+    checked as you type (continue next working day, overtime, shorten, move to start)

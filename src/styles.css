@@ -1019,3 +1019,24 @@ button.hours-tag { cursor: pointer; }
 .cap-row td.day-cell:nth-last-child(-n+2) .cap-pop { left: auto; right: 0; }
 .dt-cap .cap-cell, .phone-cap .cap-cell { flex-direction: row; flex-wrap: wrap; align-items: flex-start; }
 .dt-bench span { overflow: hidden; text-overflow: ellipsis; }
+/* =====================================================================
+   Job timing: end time or work time, pause for breaks, hours check
+   ===================================================================== */
+.seg-sm { margin-bottom: .3rem; } .seg-sm .seg-btn { font: inherit; font-size: .78rem; padding: .2rem .6rem; border: 0; background: none; cursor: pointer; }
+.seg-sm .seg-btn.active { background: var(--card); }
+.timing-checks { display: flex; flex-direction: column; gap: .35rem; justify-content: center; }
+.multi-day-box { display: flex; align-items: flex-end; gap: .5rem; flex-wrap: wrap; padding: .5rem .6rem; border-radius: 10px;
+  background: var(--amber-soft); border: 1px dashed color-mix(in srgb, var(--amber-fill) 60%, var(--line)); }
+.multi-day-box .field { margin: 0; }
+.timing-summary:empty { display: none; }
+.timing-summary { display: flex; flex-direction: column; gap: .3rem; padding: .5rem .65rem; border-radius: 10px; background: var(--card-2); border: 1px solid var(--line); }
+.ts-line { margin: 0; font-size: .86rem; font-weight: 650; font-variant-numeric: tabular-nums; }
+.ts-ok { color: var(--ok); } .ts-warn { color: var(--amber); } .ts-ot { color: var(--coral); } .ts-multi { color: var(--amber); }
+.ts-end { margin: 0; font-size: .8rem; color: var(--ink-2); font-weight: 600; }
+.ts-parts { margin: 0; padding-left: 1.1rem; font-size: .82rem; color: var(--ink-2); font-variant-numeric: tabular-nums; }
+.ts-actions { display: flex; flex-wrap: wrap; gap: .35rem; }
+.part-tag { font-size: .7rem; font-weight: 700; color: var(--info); background: var(--info-soft); border-radius: 99px; padding: 0 .45rem; }
+.dt-job-brk { position: absolute; top: 0; bottom: 0; background: repeating-linear-gradient(135deg, var(--brk) 0 4px, color-mix(in srgb, var(--brk) 50%, var(--card)) 4px 8px);
+  border-left: 1px dashed var(--line-2); border-right: 1px dashed var(--line-2); pointer-events: none; }
+.dt-job-l, .dt-job-t { position: relative; z-index: 1; }
+.seg-sm .seg-btn { white-space: nowrap; }

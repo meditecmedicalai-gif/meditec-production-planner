@@ -66,14 +66,19 @@ export function exportRows(ctx, { from, to, personIds = [] }) {
         const continuing = iso !== a.work_date;
         const row = {
           ...base, kind: 'job', task: taskName(a.task_id), pump: ctx.pump(a) || '',
-          qty: continuing ? null : a.qty_target, type: ctx.typeById.get(a.build_type_id)?.name || '',
+          qty: continuing || a.part_of ? null : a.qty_target, type: ctx.typeById.get(a.build_type_id)?.name || '',
           station: ctx.equipmentById.get(a.equipment_id)?.name || '', mode: bg ? 'Background' : 'Attended',
           recurring: a.recurring_id ? 'Y' : 'N',
           notes: [continuing ? `continues from ${a.work_date}` : null, endDateOf(a) > iso ? 'continues next day' : null, a.notes].filter(Boolean).join(' · '),
         };
         if (isTimed(a)) {
-          const pl = placeOn(a, iso);
-          row.start = Math.max(0, pl.s); row.end = Math.min(24 * 60, pl.e); row.minutes = row.end - row.start;
+          const pl = ctx.place ? ctx.place(a, iso) : placeOn(a, iso);
+          if (!pl) continue; // multi-day job: not this day (non-working / absent)
+          row.start = Math.max(0, pl.s); row.end = Math.min(24 * 60, pl.e);
+          // duration = work time (breaks it pauses for are listed as their own rows)
+          row.minutes = ctx.workMinutes ? ctx.workMinutes(a, iso) ?? row.end - row.start : row.end - row.start;
+          const paused = row.end - row.start - row.minutes;
+          if (paused > 0) row.notes = [`incl. ${paused} min break`, row.notes].filter(Boolean).join(' · ');
           if (!bg) {
             taskCols.add(row.task);
             sum.tasks.set(row.task, (sum.tasks.get(row.task) || 0) + row.minutes);
@@ -110,7 +115,7 @@ export function exportRows(ctx, { from, to, personIds = [] }) {
     r.jobs += 1;
     if (task?.counts_as_output) r.built += qty; else if (task?.is_testing) r.tested += qty; else r.other += qty;
   };
-  const inRange = ctx.assignments.filter((a) => a.work_date >= from && a.work_date <= to
+  const inRange = ctx.assignments.filter((a) => !a.part_of && a.work_date >= from && a.work_date <= to
     && (!personIds.length || personIds.includes(a.person_id)) && (a.pump_model_id || a.any_pump));
   for (const a of inRange) {
     const task = ctx.taskById.get(a.task_id);

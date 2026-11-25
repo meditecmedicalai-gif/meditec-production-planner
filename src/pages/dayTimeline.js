@@ -161,16 +161,25 @@ export function dayTimeline({ ctx, rows, iso, isToday, admin, onJob, onFree, war
       const notes = notesOf(a, p);
       const cutL = x.s < T0; const cutR = x.e > T1;
       const tl = timeLabel(a, iso) || `${fmtMin(x.s)}–${fmtMin(x.e)}`;
+      const pausing = a.pause_for_breaks !== false;
+      const inner = pausing ? day.breaks.filter((b) => b.s < x.e && x.s < b.e) : [];
+      const pausedMin = inner.reduce((t, b) => t + Math.min(x.e, b.e) - Math.max(x.s, b.s), 0);
+      const part = ctx.partInfo ? ctx.partInfo(a) : null;
       track.append(h('button', {
         type: 'button',
         class: `dt-job ${warns.length ? 'dt-warn' : ''} ${cutL ? 'cut-l' : ''} ${cutR ? 'cut-r' : ''}`,
         style: `left:${pos(x.s)}%;width:${width(x.s, x.e)}%;--lane:${x.lane};${type ? `--type-color:${type.color}` : ''}`,
         title: [jobText(ctx, a), type?.name, tl, a.equipment_id ? `Equipment: ${ctx.equipmentById.get(a.equipment_id)?.name}` : null,
+          pausedMin ? `Pauses for ${day.breaks.filter((b) => b.s < x.e && x.s < b.e).map((b) => b.label.toLowerCase()).join(' and ')} (${pausedMin} min)` : null,
+          part ? `Continued job: part ${part.n} of ${part.total}` : null,
           a.recurring_id ? 'Recurring job' : null, a.notes, ...warns.map((w) => `⚠ ${w}`), ...notes.map((w) => `⏰ ${w}`)].filter(Boolean).join('\n'),
         onclick: () => onJob(a, p),
       },
-        h('span', { class: 'dt-job-l' }, warns.length ? h('b', { class: 'chip-warn-icon' }, '!') : null, notes.length ? '⏰ ' : null, a.recurring_id ? '🔁 ' : null, jobText(ctx, a)),
-        h('span', { class: 'dt-job-t' }, cutL ? `‹ ${tl}` : cutR ? `${tl} ›` : `${hm(a.start_time) && x.s >= 0 ? fmtMin(x.s) : '…'}–${x.e <= 1440 ? fmtMin(x.e) : `${fmtMin(x.e)} +1`}`),
+        inner.map((b) => h('span', { class: 'dt-job-brk', 'aria-hidden': 'true', title: `${b.label} — job paused`,
+          style: `left:${((Math.max(x.s, b.s) - x.s) / (x.e - x.s)) * 100}%;width:${((Math.min(x.e, b.e) - Math.max(x.s, b.s)) / (x.e - x.s)) * 100}%` })),
+        h('span', { class: 'dt-job-l' }, warns.length ? h('b', { class: 'chip-warn-icon' }, '!') : null, notes.length ? '⏰ ' : null, part ? `↪ ${part.n}/${part.total} ` : null, a.recurring_id ? '🔁 ' : null, jobText(ctx, a)),
+        h('span', { class: 'dt-job-t' }, cutL ? `‹ ${tl}` : cutR ? `${tl} ›` : `${hm(a.start_time) && x.s >= 0 ? fmtMin(x.s) : '…'}–${x.e <= 1440 ? fmtMin(x.e) : `${fmtMin(x.e)} +1`}`,
+          pausedMin ? ` (incl. ${pausedMin} min break)` : ''),
       ));
     }
 

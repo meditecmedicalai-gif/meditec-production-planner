@@ -50,6 +50,7 @@ export function computeSummary({ monday, assignments, notes, tasks, models, type
     const modelKey = a.any_pump ? ANY_ID : a.pump_model_id;
     if (!modelKey || !task || !typeOk(a.build_type_id)) continue;
     if (a.work_date < from || a.work_date > friday) continue; // counted on its start day only
+    if (a.part_of) continue; // a job continued on the next day: its quantity counts once, on part 1
     if (allTasks ? !task.requires_pump : !task.counts_as_output) continue;
     cell(modelKey, a.build_type_id).planned += a.qty_target || 0;
   }
