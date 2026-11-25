@@ -46,7 +46,8 @@ Live site (once deployed): `https://meditecmedicalai-gif.github.io/meditec-produ
    [`009_job_timing.sql`](supabase/migrations/009_job_timing.sql) (jobs pause for breaks; jobs continued on the
    next working day; clears meaningless "Ends on" dates). Optionally run
    [`supabase/tests/check_multiday_jobs.sql`](supabase/tests/check_multiday_jobs.sql) to review jobs whose
-   "Ends on" looks like a mistake.
+   "Ends on" looks like a mistake. Then [`010_shared_equipment.sql`](supabase/migrations/010_shared_equipment.sql)
+   (the "Can be shared" setting for equipment).
 
 ### 3. Lock down sign-in
 1. **Authentication → Sign In / Providers** (called *Providers* in some versions):
@@ -226,7 +227,8 @@ Pumps are tested several at a time, so the planner adds up the pumps on test tha
   instead of 8/1 (hover or tab to it for "8 pumps · ~15 min each"), and only **overlapping jobs** on the bench are flagged.
 - Capacity pills always fit their own day column: they wrap onto two lines rather than spill into the next day, and
   the occupancy graph sits on its own line. `npm run test:layout` checks this at 1280 / 1440 / 1920 px and on a phone,
-  in light and dark mode, and `npm run test:timing` checks job timing (both need Playwright:
+  in light and dark mode, `npm run test:timing` checks job timing and `npm run test:shared` checks shared stations
+  (all need Playwright:
   `npm i -D playwright && npx playwright install chromium`).
 - **Occupancy graph**: hover (or tab to) a Quality Check pill in the capacity row to see pumps on test across the
   day against the limit, e.g. "08:30–11:00: 7 · 11:00–13:30: 2 · 13:30–16:00: 7", and the free places. The Day
@@ -296,8 +298,16 @@ be for "Any / mixed pump".
   dark **⏱ Background** label and are listed under *Running in the background*. A task can be marked background in Settings; each job can
   override it (*Runs: Task default / Background / Attended*). Background jobs never count as a time clash
   for the person, and are only flagged for absence on the day they start (someone has to set them up).
-- **Equipment / test stations** (Settings) can be linked to a job. ⚠ warns when the same equipment is
-  booked at overlapping times (any person), and when a person has two attended jobs whose times overlap.
+- **Equipment / test stations** (Settings) can be linked to a job. ⚠ *"… is also booked for …"* warns when the
+  same equipment is booked at overlapping times (any person) — **except shared equipment**:
+  - a station linked to a **Simultaneous** test area (e.g. **Quality Check**, up to 7 pumps) is shared: overlapping
+    jobs are normal, and only the area's capacity or a per-model limit warns;
+  - a station linked to a **One at a time** area (Medicare / Mediflex bench) always warns when jobs overlap;
+  - other equipment (Test rig 1, Assembly 1 …) follows its own **Can be shared** setting (Settings → Equipment,
+    default off), shown as *⇄ can be shared*.
+
+  The rule is the same on chips, tooltips ("Equipment: Quality Check (shared — up to 7 pumps)"), the Day timeline,
+  the job form and the Today page. ⚠ also warns when a person has two attended jobs whose times overlap.
 - **On a phone** the planner shows one day at a time with day tabs.
 - **Busy / free bar** under each person's day: filled = busy, empty (green) = free, grey = break / lunch,
   striped = background, with text such as "4h busy · 3h 15m free" ("All free", "Fully booked", "1 no time").
@@ -413,3 +423,4 @@ This is a planning aid, not a controlled QMS record.
     bench, occupancy graph), Excel export
 11. ✅ Job timing: "Ends on" only for multi-day jobs, pause for breaks, work time, each person's start / finish
     checked as you type (continue next working day, overtime, shorten, move to start)
+12. ✅ Shared stations: no double-booking warning on Simultaneous test areas or "Can be shared" equipment

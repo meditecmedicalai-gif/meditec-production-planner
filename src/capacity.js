@@ -86,6 +86,19 @@ export function stationMismatch(j, cfg) {
 
 export const isSequential = (area) => area?.capacity_mode === 'sequential';
 
+/**
+ * Can several jobs use this station / equipment at the same time?
+ *  - linked to a test area: yes when the area is "Simultaneous" (e.g. Quality Check, up to 7 pumps —
+ *    only the area / per-model limits warn); no when it is "One at a time" (Medicare / Mediflex bench);
+ *  - not linked: its own "Can be shared" setting (default no).
+ */
+export function equipmentShared(eq, cfg) {
+  if (!eq) return false;
+  const area = eq.test_area_id && cfg?.areaById?.get(eq.test_area_id);
+  if (area) return !isSequential(area);
+  return Boolean(eq.shareable);
+}
+
 /** Pumps on test among `active` jobs that pass `keep` (shared tasks count once per area and pump model). */
 function count(active, cfg, keep) {
   let total = 0;

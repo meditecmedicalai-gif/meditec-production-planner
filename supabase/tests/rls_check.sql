@@ -7,7 +7,7 @@
 -- The whole check is ONE statement. At the end it deliberately stops
 -- with an "error" whose message is the report:
 --
---     RLS CHECK FINISHED: 132 passed, 0 failed ...
+--     RLS CHECK FINISHED: 134 passed, 0 failed ...
 --
 -- Raising that error is what undoes every bit of test data, so nothing
 -- is left behind. Every line should start with PASS.
@@ -118,6 +118,9 @@ begin
     case when exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'assignments' and column_name = 'pause_for_breaks')
           and exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'assignments' and column_name = 'part_of')
          then 'PASS' else 'FAIL' end);
+  res := res || format('%s  setup   equipment can be marked "Can be shared", default no (010 migration run)',
+    case when (select column_default from information_schema.columns where table_schema = 'public' and table_name = 'equipment' and column_name = 'shareable') = 'false'
+         then 'PASS' else 'FAIL' end);
   res := res || format('%s  setup   people can be linked to a login (people.user_id)',
     case when exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'people' and column_name = 'user_id')
          then 'PASS' else 'FAIL' end);
@@ -212,6 +215,10 @@ begin
     update public.equipment set notes = 'hacked';
     get diagnostics n = row_count;
     res := res || format('%s  viewer  cannot edit equipment', case when n = 0 then 'PASS' else 'FAIL' end);
+
+    update public.equipment set shareable = not shareable;
+    get diagnostics n = row_count;
+    res := res || format('%s  viewer  cannot change whether equipment can be shared', case when n = 0 then 'PASS' else 'FAIL' end);
 
     update public.equipment set test_area_id = null where test_area_id is not null;
     get diagnostics n = row_count;

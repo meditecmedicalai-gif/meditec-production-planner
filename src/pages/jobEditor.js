@@ -457,7 +457,7 @@ export function editAssignment({ ctx, person, iso, assignment, isoDays, personBy
     const warnings = refresh();
     if (pv.pump_model_id === null && !pv.any_pump) { /* nothing */ }
     // Equipment bookings outside the loaded week (e.g. long jobs).
-    if (equipSel.value) {
+    if (equipSel.value && !(ctx.equipmentShared && ctx.equipmentShared(equipSel.value))) {
       const jobs = proposed();
       const minStart = jobs.map((j) => j.work_date).sort()[0];
       const maxEnd = jobs.map(endDateOf).sort().at(-1);

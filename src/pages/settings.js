@@ -168,8 +168,10 @@ const EQUIPMENT = {
   title: 'Equipment / test stations',
   singular: 'equipment item',
   help: 'Jobs can be linked to one item; the planner warns when the same item is booked at overlapping times. Link a station to a test area to count the pumps booked on it towards that area.',
-  columns: 'id, name, notes, test_area_id, active, sort_order',
-  flags: [],
+  columns: '*', // includes "shareable" (migration 010)
+  flags: [
+    { key: 'shareable', label: 'Can be shared — several jobs at the same time without a double-booking warning. (Stations linked to a test area follow its capacity mode instead: “Simultaneous” is shared, “One at a time” is not.)', badge: '⇄ can be shared' },
+  ],
   extraFields: [
     { key: 'notes', label: 'Notes', hint: 'Optional, e.g. location or capacity', maxlength: 80 },
     { key: 'test_area_id', label: 'Test area (station)', type: 'select', options: () => areaList,

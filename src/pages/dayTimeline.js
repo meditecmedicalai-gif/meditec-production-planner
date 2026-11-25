@@ -169,7 +169,7 @@ export function dayTimeline({ ctx, rows, iso, isToday, admin, onJob, onFree, war
         type: 'button',
         class: `dt-job ${warns.length ? 'dt-warn' : ''} ${cutL ? 'cut-l' : ''} ${cutR ? 'cut-r' : ''}`,
         style: `left:${pos(x.s)}%;width:${width(x.s, x.e)}%;--lane:${x.lane};${type ? `--type-color:${type.color}` : ''}`,
-        title: [jobText(ctx, a), type?.name, tl, a.equipment_id ? `Equipment: ${ctx.equipmentById.get(a.equipment_id)?.name}` : null,
+        title: [jobText(ctx, a), type?.name, tl, a.equipment_id ? `Equipment: ${ctx.equipmentLabel ? ctx.equipmentLabel(a.equipment_id) : ctx.equipmentById.get(a.equipment_id)?.name}` : null,
           pausedMin ? `Pauses for ${day.breaks.filter((b) => b.s < x.e && x.s < b.e).map((b) => b.label.toLowerCase()).join(' and ')} (${pausedMin} min)` : null,
           part ? `Continued job: part ${part.n} of ${part.total}` : null,
           a.recurring_id ? 'Recurring job' : null, a.notes, ...warns.map((w) => `⚠ ${w}`), ...notes.map((w) => `⏰ ${w}`)].filter(Boolean).join('\n'),
