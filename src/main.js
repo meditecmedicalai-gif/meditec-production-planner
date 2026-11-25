@@ -11,6 +11,7 @@ import { renderLogin } from './pages/login.js';
 import { renderToday } from './pages/today.js';
 import { renderPlanner } from './pages/planner.js';
 import { renderDemand } from './pages/demand.js';
+import { demandState } from './demandModel.js';
 import { renderHistory } from './pages/history.js';
 import { renderAccount } from './pages/account.js';
 import { renderPeople } from './pages/people.js';
@@ -51,7 +52,7 @@ async function loadShellData() {
   const today = new Date().toISOString().slice(0, 10);
   const [hours, overdue, profiles, patterns, patternDays] = await Promise.all([
     supabase.from('app_settings').select('*').eq('id', 1).maybeSingle(),
-    supabase.from('demand_notes').select('id', { count: 'exact', head: true }).in('status', ['open', 'planned']).lt('needed_by', today),
+    supabase.from('demand_notes').select('*').neq('status', 'done').lt('needed_by', today),
     supabase.from('profiles').select('id, full_name, email'),
     supabase.from('work_patterns').select('id, name, is_default'),
     supabase.from('work_pattern_days').select('*'),
@@ -62,7 +63,16 @@ async function loadShellData() {
   workingHours = mon
     ? { name: def.name, work_start: mon.start_time, work_end: mon.end_time, break_time: mon.break_time, lunch_time: mon.lunch_time, break_minutes: mon.break_minutes, lunch_minutes: mon.lunch_minutes }
     : hours.data;
-  overdueCount = overdue.count || 0;
+  // overdue = past its needed-by date and not done (done may also be automatic: linked jobs all in the past)
+  const cand = overdue.data || [];
+  if (cand.length) {
+    const [links, tasks] = await Promise.all([
+      supabase.from('assignments').select('id, demand_id, task_id, qty_target, work_date, end_date, start_time, end_time, part_of').in('demand_id', cand.map((n) => n.id)),
+      supabase.from('tasks').select('id, counts_as_output'),
+    ]);
+    const taskById = new Map((tasks.data || []).map((t) => [t.id, t]));
+    overdueCount = cand.filter((n) => demandState(n, links.error ? [] : links.data || [], { taskById, todayISO: today }).status !== 'done').length;
+  } else overdueCount = 0;
   names = new Map((profiles.data || []).map((p) => [p.id, p.full_name || p.email]));
 }
 

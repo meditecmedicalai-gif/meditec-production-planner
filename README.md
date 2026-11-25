@@ -47,7 +47,8 @@ Live site (once deployed): `https://meditecmedicalai-gif.github.io/meditec-produ
    next working day; clears meaningless "Ends on" dates). Optionally run
    [`supabase/tests/check_multiday_jobs.sql`](supabase/tests/check_multiday_jobs.sql) to review jobs whose
    "Ends on" looks like a mistake. Then [`010_shared_equipment.sql`](supabase/migrations/010_shared_equipment.sql)
-   (the "Can be shared" setting for equipment).
+   (the "Can be shared" setting for equipment), then [`011_demand_links.sql`](supabase/migrations/011_demand_links.sql)
+   (jobs linked to demand notes; automatic note status with an override).
 
 ### 3. Lock down sign-in
 1. **Authentication → Sign In / Providers** (called *Providers* in some versions):
@@ -227,7 +228,8 @@ Pumps are tested several at a time, so the planner adds up the pumps on test tha
   instead of 8/1 (hover or tab to it for "8 pumps · ~15 min each"), and only **overlapping jobs** on the bench are flagged.
 - Capacity pills always fit their own day column: they wrap onto two lines rather than spill into the next day, and
   the occupancy graph sits on its own line. `npm run test:layout` checks this at 1280 / 1440 / 1920 px and on a phone,
-  in light and dark mode, `npm run test:timing` checks job timing and `npm run test:shared` checks shared stations
+  in light and dark mode, `npm run test:timing` checks job timing, `npm run test:shared` checks shared stations and `npm run test:demand`
+  checks demand linked to jobs
   (all need Playwright:
   `npm i -D playwright && npx playwright install chromium`).
 - **Occupancy graph**: hover (or tab to) a Quality Check pill in the capacity row to see pumps on test across the
@@ -345,7 +347,9 @@ week shown, this month or custom from–to — and optionally specific people. T
   **Lunch** rows (and *Absent* / *Not a working day*). The total row uses SUBTOTAL, so it follows your filters.
 - **Absences** — Date, Person, Type, Hours (their working hours that day), Notes.
 - **Summary by person** — hours per task, total busy, free, break & lunch and absent hours (each person's own hours).
-- **Summary by pump** — units per pump model and build type (built, tested, other).
+- **Summary by pump** — units per pump model and build type (built, tested, other, and built for demand notes).
+- **Demand** — notes due in the range (and older ones not done): needed, planned in linked jobs, still to plan,
+  status, *planned too late* date, the linked jobs, priority, who asked, comment.
 - **Test capacity** — per day: Quality Check peak and time of peak; Medicare / Mediflex bench busy hours and times;
   untimed test jobs.
 
@@ -367,16 +371,39 @@ settings. The Excel library ([ExcelJS](https://github.com/exceljs/exceljs)) is o
   (click one to use it) and this job; it turns red if it overlaps another attended job.
 
 ## Demand & Notes
-- Anyone can post a note: pump model (or a general note), build type, quantity, needed-by date,
-  priority, comment and status (**Open** = not yet planned, **Planned** = in the schedule,
-  **Done** = delivered / no longer needed).
-- Viewers can edit and change the status of **their own** notes; the admin can edit any note and is the
-  only one who can delete. Each note shows who posted it and who last edited it.
-- Filter by status, pump model, build type, priority or "only my notes". Filters are remembered on
-  that device.
-- The **Planner** shows an "Open demand" panel (open + planned notes, overdue first) above the grid, with
-  counts of overdue items and items due in the displayed week. Click a note to open it; the panel can be
-  collapsed.
+Anyone can post a note: pump model (or Any / mixed, or a general note), build type, quantity, needed-by date,
+priority and comment. Viewers (the manager) can edit their **own** notes and mark them done; the admin can edit
+any note and is the only one who can delete or plan.
+
+**Linked to jobs**
+- **Plan this** (admin) on a note opens *Add work* in the planner, pre-filled with the pump model, build type,
+  the **quantity still needed**, the output task (Final assembly), a person trained on the model with the most
+  free time, and a **suggested day: the working day before it's needed** (never in the past) — and links the job
+  to the note.
+- **Covers demand** in the job form lists the open notes for that pump model (or Any / mixed). A note can be
+  covered by several jobs; each job covers one note. Planner chips show *📋 demand*.
+- **Planned** = the linked jobs' quantities for tasks that *count as output*; a job continued on the next day or
+  over several days counts once.
+
+**Status — automatic, you can override it**
+| Status | When |
+|---|---|
+| ⚠ **Needs planning** | nothing planned |
+| ◐ **Partly planned** | e.g. "6 / 10 planned" |
+| ✓ **Fully planned** | planned ≥ needed |
+| **Done** | fully planned and every linked job's day has passed — or **Mark done** by hand |
+
+*Mark done* / *Edit → Status* set an override (shown "set by hand"); *Back to automatic* clears it.
+**⚠ Planned too late — Fri 28 Nov** shows when a linked job finishes after the needed-by date.
+
+**Layout** — sections with counts (Done collapsed); each note is a card: big pump model + build type · "10 needed
+by Fri 28 Nov" with **Due tomorrow / Overdue 2 days / In 5 days** coloured by urgency · progress bar "6 / 10 planned"
+· priority · who asked and when · comment (2 lines, click to expand) · linked jobs ("Mon 24 Nov · Irwin · Final
+assembly × 4"). Sorted overdue first, then by needed-by date, then priority. Fully planned and done notes are faded;
+**Hide fully planned** hides them. Filters (pump model, build type, priority, only my notes) are remembered.
+- **Planner panel**: a compact list of *Needs planning* and *Partly planned* only, with **Plan this**.
+- **Today**: *Demand — most urgent*, the top 5 not yet fully planned (or planned too late); the "units of demand
+  still to plan" number and the overdue count use the linked jobs too, as does the *Demand & notes* badge.
 
 ## Weekly summary
 Shown below the planner grid (or jump to it with **Summary ↓**), for the week being displayed:
@@ -384,9 +411,10 @@ Shown below the planner grid (or jump to it with **Summary ↓**), for the week 
 | Column | Meaning |
 |---|---|
 | **Planned** | Quantity targets this week (Mon–Fri) for tasks marked *Counts as output* in Settings (normally Final assembly). Tick **Count all pump tasks** to include every pump task instead. Background jobs follow the same rule; a job spanning several days counts once, in the week it starts. |
-| **Demand due** | Open + planned demand notes for that model and build type due by Friday of that week, **including overdue**. |
-| **Gap** | Planned − Demand due. Red = short, green = covered. |
-| **Later / no date** | Open + planned demand due after that week or with no date (for information; not in the gap). |
+| **Demand due** | Quantity needed on demand notes (not done) for that model and build type due by Friday of that week, **including overdue**. |
+| **Planned for it** | Of that, the quantity already planned in **jobs linked to those notes** (any week). |
+| **Still to plan** | Demand due − planned for it, per note. Red = still to plan, green ✓ 0 = all planned. |
+| **Later / no date** | Still to plan on notes due after that week or with no date. |
 
 Rows are per pump model and build type, with an *All types* subtotal per model. Filter to one build type
 (or *Not specified*) with the drop-down. General notes without a pump model are not counted.
@@ -424,3 +452,4 @@ This is a planning aid, not a controlled QMS record.
 11. ✅ Job timing: "Ends on" only for multi-day jobs, pause for breaks, work time, each person's start / finish
     checked as you type (continue next working day, overtime, shorten, move to start)
 12. ✅ Shared stations: no double-booking warning on Simultaneous test areas or "Can be shared" equipment
+13. ✅ Demand linked to jobs: Plan this, Covers demand, automatic status, planned too late, clearer cards

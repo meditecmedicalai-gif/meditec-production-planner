@@ -37,6 +37,7 @@ function filt(rows, params) {
     else if (op === 'lte') rows = rows.filter(r => String(r[k]) <= val);
     else if (op === 'is') rows = rows.filter(r => val === 'null' ? r[k] == null : String(r[k]) === val);
     else if (op === 'lt') rows = rows.filter(r => r[k] != null && String(r[k]) < val);
+    else if (op === 'neq') rows = rows.filter(r => String(r[k]) !== val);
     else if (op === 'gt') rows = rows.filter(r => r[k] != null && String(r[k]) > val);
     else if (op === 'in') { const set = val.replace(/^\(|\)$/g,'').split(',').map(s=>s.replace(/"/g,'')); rows = rows.filter(r => set.includes(String(r[k]))); }
   }

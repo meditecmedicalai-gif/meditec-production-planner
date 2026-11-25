@@ -19,7 +19,7 @@ export function daysBetween(from, to) {
  * ctx: a planner ctx (makeCtx(loadRange(...))); range from..to; personIds: [] = everyone.
  * Returns { timesheet, absences, byPerson, byPump, capacity }.
  */
-export function exportRows(ctx, { from, to, personIds = [] }) {
+export function exportRows(ctx, { from, to, personIds = [], demand = null }) {
   const days = daysBetween(from, to);
   const people = ctx.people.filter((p) => (personIds.length ? personIds.includes(p.id) : p.active
     || ctx.assignments.some((a) => a.person_id === p.id)));
@@ -108,11 +108,12 @@ export function exportRows(ctx, { from, to, personIds = [] }) {
 
   // Units per pump model and build type (jobs starting in the range; quantities counted once)
   const pumpMap = new Map();
-  const add = (model, type, task, qty) => {
+  const add = (model, type, task, qty, linked) => {
     const key = `${model}|${type}`;
-    if (!pumpMap.has(key)) pumpMap.set(key, { model, type, built: 0, tested: 0, other: 0, jobs: 0 });
+    if (!pumpMap.has(key)) pumpMap.set(key, { model, type, built: 0, tested: 0, other: 0, linked: 0, jobs: 0 });
     const r = pumpMap.get(key);
     r.jobs += 1;
+    if (linked && task?.counts_as_output) r.linked += qty;
     if (task?.counts_as_output) r.built += qty; else if (task?.is_testing) r.tested += qty; else r.other += qty;
   };
   const inRange = ctx.assignments.filter((a) => !a.part_of && a.work_date >= from && a.work_date <= to
@@ -122,8 +123,9 @@ export function exportRows(ctx, { from, to, personIds = [] }) {
     const type = ctx.typeById.get(a.build_type_id)?.name || 'Not specified';
     const qty = a.qty_target || 0;
     const mix = (a.pump_mix || []).filter((x) => x.qty > 0 && ctx.modelById.get(x.pump_model_id));
-    if (a.any_pump && mix.length) for (const m of mix) add(ctx.modelById.get(m.pump_model_id).name, type, task, m.qty);
-    else add(a.any_pump ? 'Any / mixed pump' : ctx.modelById.get(a.pump_model_id)?.name || '—', type, task, qty);
+    const linked = Boolean(a.demand_id);
+    if (a.any_pump && mix.length) for (const m of mix) add(ctx.modelById.get(m.pump_model_id).name, type, task, m.qty, linked);
+    else add(a.any_pump ? 'Any / mixed pump' : ctx.modelById.get(a.pump_model_id)?.name || '—', type, task, qty, linked);
   }
   const order = new Map(ctx.models.map((m, i) => [m.name, i]));
   const byPump = [...pumpMap.values()].sort((a, b) => (order.get(a.model) ?? 99) - (order.get(b.model) ?? 99) || a.type.localeCompare(b.type));
@@ -145,5 +147,18 @@ export function exportRows(ctx, { from, to, personIds = [] }) {
     }),
   };
 
-  return { timesheet, absences, byPerson, byPump, capacity, people: people.map((p) => p.name) };
+  // Demand notes due in the range (or overdue and not done), with the jobs linked to them
+  const demandRows = !demand?.items ? [] : demand.items
+    .filter((x) => (x.note.needed_by && x.note.needed_by >= from && x.note.needed_by <= to) || (x.state.status !== 'done' && (!x.note.needed_by || x.note.needed_by < from)))
+    .map(({ note: n, state: s }) => ({
+      model: n.any_pump ? 'Any / mixed pump' : demand.modelById.get(n.pump_model_id)?.name || 'General note',
+      type: demand.typeById.get(n.build_type_id)?.name || '',
+      needed: n.quantity, neededBy: n.needed_by, planned: s.planned, toPlan: s.remaining,
+      status: { open: 'Needs planning', partly: 'Partly planned', planned: 'Fully planned', done: 'Done' }[s.status] + (s.overridden ? ' (set by hand)' : ''),
+      tooLate: s.tooLate ? s.lastFinish : null,
+      jobs: s.jobs.map((a) => `${a.work_date} ${(demand.personById.get(a.person_id)?.name || '—').split(' ')[0]} ${demand.taskById.get(a.task_id)?.name || ''} ×${a.qty_target ?? '?'}`).join('; '),
+      priority: n.priority, askedBy: demand.nameOf(n.created_by), comment: n.comment || '',
+    }));
+
+  return { timesheet, absences, byPerson, byPump, capacity, demand: demandRows, people: people.map((p) => p.name) };
 }

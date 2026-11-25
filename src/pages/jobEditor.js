@@ -9,6 +9,8 @@ import { toISO, fromISO, addDays, today, fmtDayShort, fmtDayLong } from '../date
 import { placeOn, fmtMin, toMin, workDay, nextFree, fmtDur } from '../daytime.js';
 import { hoursText, makeHours } from '../hours.js';
 import { addWork, breakMinutes, workBetween, planWork, dayInfoFrom, parseDuration } from '../timing.js';
+import { coverableNotes } from '../demandModel.js';
+import { noteText } from './demand.js';
 import { miniDay } from './dayTimeline.js';
 
 const ANY = '__any';
@@ -125,8 +127,8 @@ async function loadTemplate(ctx, id) {
 }
 
 // ------------------------------------------------------------------ job form
-export function editAssignment({ ctx, person, iso, assignment, isoDays, personById, onSaved, copyFrom, times }) {
-  const src = assignment || copyFrom || (times ? { start_time: times.start, end_time: times.end } : null);
+export function editAssignment({ ctx, person, iso, assignment, isoDays, personById, onSaved, copyFrom, times, prefill }) {
+  const src = assignment || copyFrom || (times || prefill ? { ...(prefill || {}), ...(times ? { start_time: times.start, end_time: times.end } : {}) } : null);
   const isNew = !assignment;
   const activePeople = [...personById.values()].filter((p) => p.active || p.id === person?.id);
 
@@ -172,6 +174,27 @@ export function editAssignment({ ctx, person, iso, assignment, isoDays, personBy
     bgSel.value = cur;
   };
   const equipSel = h('select', {}, options(ctx.equipment, src?.equipment_id, { blank: '— none —' }));
+  // "Covers demand": open notes for this pump model (or Any / mixed); a note can be covered by several jobs
+  const demandSel = ctx.demand && !ctx.demand.error ? h('select', {}) : null;
+  const demandField = demandSel ? field('Covers demand', demandSel, 'Optional. Its quantity counts towards the note’s “planned”.') : null;
+  let demandInit = false;
+  const rebuildDemand = () => {
+    if (!demandSel) return;
+    const cur = demandInit ? demandSel.value : (src?.demand_id || '');
+    demandInit = true;
+    const pv = pumps.values();
+    const list = coverableNotes(ctx.demand.items, { pumpModelId: pv.pump_model_id, anyPump: pv.any_pump });
+    const current = cur && !list.some((x) => x.note.id === cur) ? ctx.demand.items.find((x) => x.note.id === cur) : null;
+    const label = (x) => {
+      const n = x.note; const s = x.state;
+      return [noteText(n, ctx.demand), n.needed_by ? `by ${fmtDayShort(fromISO(n.needed_by))}` : 'no date',
+        `${s.planned}${s.needed != null ? `/${s.needed}` : ''} planned`, ctx.demand.nameOf(n.created_by)].join(' · ');
+    };
+    mount(demandSel, h('option', { value: '' }, list.length || current ? '— none —' : '— no open demand for this pump —'),
+      [...(current ? [current] : []), ...list].map((x) => h('option', { value: x.note.id }, label(x))));
+    demandSel.value = [...demandSel.options].some((o) => o.value === cur) ? cur : '';
+    demandField.hidden = !list.length && !current;
+  };
   const timeHint = h('p', { class: 'muted small time-hint' });
   const miniBox = h('div', { class: 'mini-box', 'aria-live': 'polite' });
   const warnBox = h('div', { class: 'stack-sm', 'aria-live': 'polite' });
@@ -353,6 +376,7 @@ export function editAssignment({ ctx, person, iso, assignment, isoDays, personBy
   const refresh = () => {
     setBgOptions();
     pumps.rebuild();
+    rebuildDemand();
     // default start: the person's next free slot within their hours (new jobs only, until you type a start)
     if (isNew && !copyFrom && !times && !startTouched && personSel.value && selectedDates()[0] && ctx.dayOf) {
       const d0 = selectedDates()[0];
@@ -486,6 +510,8 @@ export function editAssignment({ ctx, person, iso, assignment, isoDays, personBy
       background: bgSel.value === '' ? null : bgSel.value === 'true',
       equipment_id: equipSel.value || null,
     };
+    // demand_id comes with migration 011: only sent when used
+    if (demandSel && (demandSel.value || src?.demand_id)) values.demand_id = demandSel.value || null;
     // only sent when off, so the form also works before migration 009
     if (!pauseBox.input.checked) values.pause_for_breaks = false;
     else if (assignment && assignment.pause_for_breaks === false) values.pause_for_breaks = true;
@@ -607,6 +633,7 @@ export function editAssignment({ ctx, person, iso, assignment, isoDays, personBy
         timeHint,
         miniBox,
         h('div', { class: 'form-grid form-grid-2' }, field('Runs', bgSel), field('Equipment / test station', equipSel)),
+        demandField,
       ),
       repeat ? h('fieldset', { class: 'skills-fieldset' }, h('legend', {}, '🔁 Repeat'), repeat.el) : null,
       assignment?.recurring_id ? h('p', { class: 'muted small' }, `🔁 Part of a recurring series${ctx.recurringById?.get(assignment.recurring_id) ? ` — ${describeRepeat(ctx.recurringById.get(assignment.recurring_id))}` : ''}.`) : null,

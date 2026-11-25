@@ -7,7 +7,7 @@
 -- The whole check is ONE statement. At the end it deliberately stops
 -- with an "error" whose message is the report:
 --
---     RLS CHECK FINISHED: 134 passed, 0 failed ...
+--     RLS CHECK FINISHED: 138 passed, 0 failed ...
 --
 -- Raising that error is what undoes every bit of test data, so nothing
 -- is left behind. Every line should start with PASS.
@@ -120,6 +120,10 @@ begin
          then 'PASS' else 'FAIL' end);
   res := res || format('%s  setup   equipment can be marked "Can be shared", default no (010 migration run)',
     case when (select column_default from information_schema.columns where table_schema = 'public' and table_name = 'equipment' and column_name = 'shareable') = 'false'
+         then 'PASS' else 'FAIL' end);
+  res := res || format('%s  setup   jobs can cover a demand note; note status can be overridden (011 migration run)',
+    case when exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'assignments' and column_name = 'demand_id')
+          and exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'demand_notes' and column_name = 'status_override')
          then 'PASS' else 'FAIL' end);
   res := res || format('%s  setup   people can be linked to a login (people.user_id)',
     case when exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'people' and column_name = 'user_id')
@@ -307,9 +311,13 @@ begin
     get diagnostics n = row_count;
     res := res || format('%s  viewer  can edit own note (comment, quantity, type)', case when n = 1 then 'PASS' else 'FAIL' end);
 
-    update public.demand_notes set status = 'done' where id = note_id;
+    update public.demand_notes set status = 'done', status_override = 'done' where id = note_id;
     get diagnostics n = row_count;
-    res := res || format('%s  viewer  can mark own note done', case when n = 1 then 'PASS' else 'FAIL' end);
+    res := res || format('%s  viewer  can mark own note done (status override)', case when n = 1 then 'PASS' else 'FAIL' end);
+
+    update public.assignments set demand_id = note_id;
+    get diagnostics n = row_count;
+    res := res || format('%s  viewer  cannot link jobs to a demand note', case when n = 0 then 'PASS' else 'FAIL' end);
 
     delete from public.demand_notes where id = note_id;
     get diagnostics n = row_count;
@@ -329,6 +337,9 @@ begin
       update public.demand_notes set comment = 'hacked' where id = other_note;
       get diagnostics n = row_count;
       res := res || format('%s  viewer  cannot edit others'' notes', case when n = 0 then 'PASS' else 'FAIL' end);
+      update public.demand_notes set status_override = 'done' where id = other_note;
+      get diagnostics n = row_count;
+      res := res || format('%s  viewer  cannot override the status of others'' notes', case when n = 0 then 'PASS' else 'FAIL' end);
     end if;
 
     execute 'reset role';
@@ -492,6 +503,15 @@ begin
       select count(*) into n from public.audit_log
       where table_name in ('work_patterns', 'work_pattern_days', 'person_work_patterns', 'person_day_hours') and changed_at >= now();
       res := res || format('%s  admin   working-hours changes written to the change log', case when n >= 4 then 'PASS' else 'FAIL' end);
+
+      -- Demand: a job covers a note; deleting the note only unlinks the job
+      insert into public.demand_notes (quantity, comment, pump_model_id) values (4, 'RLS demand link', (select id from public.pump_models order by sort_order limit 1)) returning id into other_note;
+      insert into public.assignments (person_id, work_date, task_id, pump_model_id, build_type_id, qty_target, demand_id)
+      values (pid3, current_date, (select id from public.tasks where name = 'Final assembly'), (select id from public.pump_models order by sort_order limit 1),
+              (select id from public.build_types where is_default), 4, other_note) returning id into pid2;
+      delete from public.demand_notes where id = other_note;
+      select count(*) into n from public.assignments where id = pid2 and demand_id is null;
+      res := res || format('%s  admin   job linked to a demand note; deleting the note keeps the job (unlinked)', case when n = 1 then 'PASS' else 'FAIL' end);
 
       -- A job continued on the next working day: deleting part 1 removes its parts
       insert into public.assignments (person_id, work_date, task_id, start_time, end_time)

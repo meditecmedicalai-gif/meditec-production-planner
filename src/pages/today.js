@@ -8,6 +8,7 @@ import { auth } from '../auth.js';
 import { toISO, fromISO, addDays, mondayOf, today, isoWeek, fmtDayLong, fmtDayShort, fmtRange } from '../dates.js';
 import { loadWeek, makeCtx, ABSENCE_TYPES } from './planner.js';
 import { computeSummary, loadSummaryDemand } from './summary.js';
+import { noteCard } from './demand.js';
 import { coversDay, endDateOf, intervalOf, timeLabel, hm } from '../jobs.js';
 import { capacityForDay, capacityAt, level, occupancyText } from '../capacity.js';
 import { occupancySvg } from './occupancy.js';
@@ -119,18 +120,15 @@ export async function renderToday(main) {
   const sameWeek = toISO(thisMonday) === toISO(monday);
   const trendFrom = toISO(addDays(monday, -49));
 
-  const [week, current, demand, feed, profiles, settings, trendRows] = await Promise.all([
+  const [week, current, demand, profiles, settings, trendRows] = await Promise.all([
     loadWeek(monday),
     sameWeek ? null : loadWeek(thisMonday),
     loadSummaryDemand(),
-    supabase.from('demand_notes')
-      .select('id, pump_model_id, any_pump, build_type_id, quantity, needed_by, comment, status, created_by, created_at')
-      .in('status', ['open', 'planned']).order('created_at', { ascending: false }).limit(6),
     supabase.from('profiles').select('id, full_name, email'),
     supabase.from('app_settings').select('work_start, work_end, break_time, break_minutes, lunch_time, lunch_minutes').eq('id', 1).maybeSingle(),
     supabase.from('assignments').select('*').gte('work_date', trendFrom).lte('work_date', toISO(friday)),
   ]);
-  const err = week.error || current?.error || demand.error || feed.error || profiles.error || settings.error || trendRows.error;
+  const err = week.error || current?.error || demand.error || profiles.error || settings.error || trendRows.error;
   if (reportError(err, 'Loading Today')) return;
 
   const ctx = makeCtx(week);
@@ -148,7 +146,8 @@ export async function renderToday(main) {
   const planWeek = `#/planner?week=${toISO(monday)}`;
 
   // ---------------------------------------------------------------- numbers
-  const openDemand = demand.notes.filter((n) => n.pump_model_id || n.any_pump).reduce((t, n) => t + (n.quantity || 0), 0);
+  // demand.notes: not done, with the quantity planned in linked jobs ("still to plan" = remaining)
+  const openDemand = demand.notes.filter((n) => n.pump_model_id || n.any_pump).reduce((t, n) => t + (n.remaining ?? 0), 0);
   const overdue = demand.notes.filter((n) => n.needed_by && n.needed_by < todayISO);
   const absentToday = now.absences.filter((a) => a.start_date <= todayISO && a.end_date >= todayISO);
   const absentPeople = [...new Map(absentToday.map((a) => [a.person_id, a])).values()];
@@ -210,7 +209,7 @@ export async function renderToday(main) {
   };
   const stats = h('section', { class: 'card stats', 'aria-label': 'Key numbers' },
     stat(summary.grand.planned, `units planned ${sameWeek ? 'this week' : `in week ${isoWeek(monday)}`}`, planWeek),
-    stat(openDemand, 'units of open demand', '#/demand'),
+    stat(openDemand, 'units of demand still to plan', '#/demand'),
     stat(overdue.length, overdue.length === 1 ? 'demand note overdue' : 'demand notes overdue', '#/demand', overdue.length ? 'alert' : 'good'),
     stat(absentPeople.length, absentPeople.length === 1 ? 'person off today' : 'people off today', `#/planner?week=${toISO(thisMonday)}`),
   );
@@ -218,14 +217,14 @@ export async function renderToday(main) {
   // ---------------------------------------------------------------- glance (sentence + grouped bar)
   const planned = summary.grand.planned;
   const needed = summary.grand.demand;
-  const gap = planned - needed;
-  const worst = summary.groups.slice().sort((a, b) => (a.total.planned - a.total.demand) - (b.total.planned - b.total.demand))[0];
+  const toPlan = summary.grand.toPlan;
+  const worst = summary.groups.slice().sort((a, b) => b.total.toPlan - a.total.toPlan)[0];
   const num = (v, cls = '') => { const e = h('span', { class: `num ${cls}` }, '0'); countUp(e, v); return e; };
   const sentence = h('p', { class: 'big' },
-    num(planned), ` pump${planned === 1 ? '' : 's'} planned against `, num(needed), ' needed by Friday. ',
-    !needed && !planned ? 'Nothing planned or due yet.'
-      : gap < 0 ? ['We’re ', num(-gap, 'short'), ' short', worst && worst.total.planned - worst.total.demand < 0 ? [' — mostly ', h('b', {}, worst.model.name)] : '', '.']
-        : gap > 0 ? ['Covered, with ', num(gap, 'ok'), ' to spare.'] : 'Exactly covered.');
+    num(planned), ` pump${planned === 1 ? '' : 's'} planned this week. `,
+    !needed ? 'Nothing due by Friday.'
+      : toPlan > 0 ? [num(needed), ' needed by Friday — ', num(toPlan, 'short'), ' still to plan', worst?.total.toPlan > 0 ? [' (mostly ', h('b', {}, worst.model.name), ')'] : '', '.']
+        : [num(needed), ' needed by Friday — ', h('span', { class: 'num ok' }, 'all planned'), ' ✓']);
   const facts = h('div', { class: 'facts' },
     overdue.length ? h('span', {}, h('b', { class: 'late' }, String(overdue.length)), ` demand note${overdue.length === 1 ? '' : 's'} overdue`) : null,
     absentPeople.slice(0, 2).map((a) => h('span', {}, h('b', {}, (personById.get(a.person_id)?.name || 'Someone').split(' ')[0]),
@@ -241,30 +240,14 @@ export async function renderToday(main) {
     facts.childElementCount ? facts : null,
   );
 
-  // ---------------------------------------------------------------- feed
-  const feedList = h('div', { class: 'feed' },
-    feed.data.length
-      ? feed.data.map((note) => {
-          const model = week.modelById.get(note.pump_model_id);
-          const type = week.typeById.get(note.build_type_id);
-          const who = nameOf.get(note.created_by) || 'Someone';
-          const late = note.needed_by && note.needed_by < todayISO;
-          const soon = note.needed_by && !late && note.needed_by <= toISO(addDays(todayD, 7));
-          return h('a', { class: 'note', href: '#/demand' },
-            avatar(who, note.created_by),
-            h('div', {},
-              h('div', { class: 'meta' }, h('b', {}, who), ` · ${ago(note.created_at)}`),
-              h('div', { class: 'txt' }, note.comment || `${note.any_pump ? 'Any / mixed pump' : model?.name || 'General'}${note.quantity != null ? ` × ${note.quantity}` : ''}`),
-              h('span', { class: `due ${late ? 'due-overdue' : soon ? 'due-soon' : ''}` },
-                note.needed_by ? (late ? 'Overdue' : `By ${fmtDayShort(fromISO(note.needed_by))}`) : 'No date'),
-              model ? h('span', { class: 'muted small' }, ` ${model.name}${note.quantity != null ? ` × ${note.quantity}` : ''} `) : null,
-              type ? h('span', { class: 'dot-label small', style: `--c:${typeColour(type.color)}` }, type.name) : null,
-            ));
-        })
-      : h('p', { class: 'muted' }, 'No open demand notes.'),
-  );
-  const feedCard = h('section', { class: 'card' },
-    h('h2', {}, 'From the floor'), h('p', { class: 'sub' }, 'Open demand notes, newest first'), feedList);
+  // ---------------------------------------------------------------- most urgent demand
+  const urgent = (demand.demand?.items || []).filter((x) => x.state.status === 'open' || x.state.status === 'partly' || x.state.tooLate).slice(0, 5);
+  const feedCard = h('section', { class: 'card urgent-demand' },
+    h('div', { class: 'card-head' }, h('h2', {}, 'Demand — most urgent'), h('a', { class: 'link small', href: '#/demand' }, 'All demand →')),
+    h('p', { class: 'sub' }, 'Not yet fully planned (or planned too late), most urgent first'),
+    urgent.length
+      ? h('ul', { class: 'dc-rows' }, urgent.map((x) => noteCard(x, demand.demand, { compact: true, onChanged: () => renderToday(currentMain) })))
+      : h('p', { class: 'muted' }, 'Everything is planned. 🎉'));
 
   // ---------------------------------------------------------------- donut, trend, workload, equipment
   const mix = new Map();

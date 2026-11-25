@@ -4,6 +4,7 @@ import { supabase } from '../supabase.js';
 import { toISO, fromISO, addDays, mondayOf, today, fmtDate } from '../dates.js';
 import { loadRange, makeCtx } from './planner.js';
 import { exportRows } from '../exportData.js';
+import { loadDemand } from './demand.js';
 
 const MAX_DAYS = 186;
 
@@ -50,7 +51,7 @@ export async function openExport({ weekMonday = null } = {}) {
     body: h('div', { class: 'stack' },
       field('Dates', rangeSel), customBox,
       h('fieldset', { class: 'skills-fieldset' }, h('legend', {}, 'People'), everyone.el, list),
-      h('p', { class: 'muted small' }, 'Sheets: Timesheet (jobs, free time, breaks — each person’s own hours; overnight jobs split by day), Absences, Summary by person, Summary by pump, Test capacity.'),
+      h('p', { class: 'muted small' }, 'Sheets: Timesheet (jobs, free time, breaks — each person’s own hours; overnight jobs split by day), Absences, Summary by person, Summary by pump, Demand (with the jobs planned for it), Test capacity.'),
       status, err),
     actions: [{ label: 'Cancel' }, {
       label: 'Download .xlsx', variant: 'primary',
@@ -63,9 +64,9 @@ export async function openExport({ weekMonday = null } = {}) {
         if (!everyone.input.checked && !personIds.length) { err.textContent = 'Tick at least one person.'; return false; }
         status.textContent = 'Preparing the spreadsheet…';
         try {
-          const [data, xlsx] = await Promise.all([loadRange(from.value, to.value), import('../exportXlsx.js')]);
+          const [data, demand, xlsx] = await Promise.all([loadRange(from.value, to.value), loadDemand(), import('../exportXlsx.js')]);
           if (data.error) throw data.error;
-          const rows = exportRows(makeCtx(data), { from: from.value, to: to.value, personIds });
+          const rows = exportRows(makeCtx(data), { from: from.value, to: to.value, personIds, demand: demand.error ? null : demand });
           const name = `Pump room plan ${from.value} to ${to.value}.xlsx`;
           const wb = await xlsx.buildWorkbook(rows, { from: from.value, to: to.value, title: `Pump room plan ${from.value} to ${to.value}` });
           await xlsx.downloadWorkbook(wb, name);
