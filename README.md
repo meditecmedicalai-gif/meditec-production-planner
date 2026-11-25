@@ -1,4 +1,4 @@
-# Meditec Pump Room Production Planner
+# Meditec Production Room Planning
 
 A weekly production planner for the Meditec Medical Ltd pump room.
 
@@ -345,7 +345,7 @@ Under *Timing & equipment* in the job form:
 ## Excel export
 **Export to Excel** on the planner and on Today (admin and viewer). Choose the dates — this week, last week, the
 week shown, this month or custom from–to — and optionally specific people. The browser builds the .xlsx
-(no data leaves Supabase), named like `Pump room plan 2026-11-23 to 2026-11-27.xlsx`:
+(no data leaves Supabase), named like `Production Room Planning 2026-11-23 to 2026-11-27.xlsx`:
 - **Timesheet** — one row per job per day per person: Date, Person, Start, End, Duration (hours), **Category**
   (Production / Office), Task, Pump model (or Any / mixed with the actual pumps), Quantity, **Units done**, Build type, Station, Attended / Background, Recurring, Notes.
   Overnight and multi-day jobs are split by day; Duration is work time (breaks the job pauses for are their own

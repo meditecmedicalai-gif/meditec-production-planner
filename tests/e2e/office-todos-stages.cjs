@@ -66,7 +66,16 @@ const shot = async (pg, name) => { await pg.addStyleTag({ content: '.toast-host{
 const txt = async (loc) => (await loc.textContent()).replace(/\s+/g, ' ');
 
 (async () => {
+  // ---- app name + credit line (login page, then sidebar)
+  { const b0 = await chromium.launch(); const p0 = await (await b0.newContext({ viewport: { width: 1440, height: 900 } })).newPage();
+    await p0.route('https://example.supabase.co/**', mock('admin', db)); await mock.mockRealtime(p0);
+    await p0.goto(BASE); await p0.waitForSelector('#email');
+    ok(/Meditec Production Room Planning/.test(await p0.title()) && /Meditec Production Room Planning/.test(await p0.textContent('.login')), 'login: app name "Meditec Production Room Planning"');
+    ok((await p0.textContent('.login-card .credit')).trim() === 'Built by Prince Tony', 'login: credit line under the form');
+    await shot(p0, 'login-desktop.png'); await b0.close(); }
   let { b, pg, errs } = await login('admin', { width: 1440, height: 1000 });
+  ok(/· Production Room Planning$/.test(await pg.title()) && (await pg.textContent('.brand-sub')).trim() === 'Production Room Planning', 'sidebar + tab title: "Production Room Planning"');
+  ok((await pg.textContent('.side-foot .credit')).trim() === 'Built by Prince Tony' && await pg.locator('.side-foot .credit').isVisible(), 'sidebar footer: credit line');
 
   // ---- Settings: stages per pump model, task category
   await pg.goto(BASE + '#/settings'); await pg.waitForSelector('button[title="Production stages for QPro 2000"]');
