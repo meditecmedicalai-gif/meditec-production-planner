@@ -1192,3 +1192,69 @@ td.day-cell.drop-ok { outline: 2px dashed var(--brand); outline-offset: -3px; ba
 .mix-item.mix-unknown span { font-style: italic; }
 .mix-total { margin: .4rem 0 0; }
 input[readonly] { background: var(--card-2, #f4f1ee); color: var(--ink-2); }
+
+/* =====================================================================
+   Print: one page per person (printPeople.js). Pages are laid out at their
+   printed size off-screen, measured, and shrunk to fit one A4 page each.
+   Fixed light colours: the same from dark mode, in Chrome and Edge.
+   ===================================================================== */
+@page pp-landscape { size: A4 landscape; margin: 9mm; }
+@page pp-portrait { size: A4 portrait; margin: 9mm; }
+.pp-measure { position: fixed; left: -40000px; top: 0; visibility: hidden; pointer-events: none; z-index: -1; }
+.pp-root { display: none; }
+.pp-page {
+  box-sizing: border-box; overflow: hidden; display: flex; flex-direction: column; gap: 1.6mm;
+  font-family: var(--font, system-ui, sans-serif); font-size: var(--pp-fs, 10pt); line-height: 1.25;
+  color: #111; background: #fff; color-scheme: light;
+  -webkit-print-color-adjust: exact; print-color-adjust: exact;
+}
+.pp-landscape { width: 279mm; height: 190mm; page: pp-landscape; }
+.pp-portrait { width: 192mm; height: 277mm; page: pp-portrait; }
+.pp-page + .pp-page { break-before: page; }
+.pp-head { display: flex; justify-content: space-between; align-items: flex-end; gap: 4mm; border-bottom: 2px solid #7C1874; padding-bottom: 1.5mm; flex: none; }
+.pp-name { font-family: var(--serif, Georgia, serif); font-size: 1.7em; font-weight: 650; color: #7C1874; line-height: 1.1; }
+.pp-cont { font-size: .55em; color: #555; font-family: var(--font, system-ui, sans-serif); font-weight: 500; }
+.pp-role { color: #444; }
+.pp-meta { text-align: right; font-size: .9em; color: #333; }
+.pp-period { font-weight: 700; color: #111; font-size: 1.08em; }
+.pp-printed { color: #666; font-size: .9em; }
+.pp-days { flex: none; display: flex; flex-direction: column; gap: 1.4mm; }
+.pp-cols2 .pp-days { display: block; column-count: 2; column-gap: 6mm; column-rule: 1px solid #ddd; }
+.pp-cols2 .pp-day + .pp-day { margin-top: 1.4mm; }
+.pp-cols2 .pp-day { break-inside: auto; }   /* a busy day may continue in the next column (its heading stays with its first job) */
+.pp-day { break-inside: avoid; }
+.pp-dayhead { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 2.5mm; border-bottom: 1px solid #c9bfc5; padding-bottom: .4mm; margin-bottom: .6mm; break-after: avoid; }
+.pp-dayhead b { font-size: 1.05em; }
+.pp-hrs, .pp-busy { color: #444; }
+.pp-oneoff { color: #8a4b00; font-weight: 600; }
+.pp-bar { position: relative; flex: 1 1 30mm; min-width: 20mm; max-width: 60mm; height: 1.8mm; background: #dff3e5; border-radius: 1mm; overflow: hidden; align-self: center; }
+.pp-bar span { position: absolute; top: 0; bottom: 0; background: #7C1874; opacity: .75; }
+.pp-job { display: grid; grid-template-columns: 6.4em minmax(0, 1fr); gap: 0 1.5mm; border-left: 2.5px solid var(--type-color, #8a8a8a); padding: .3mm 0 .3mm 1.5mm; margin: .5mm 0; break-inside: avoid; }
+.pp-time { font-variant-numeric: tabular-nums; font-weight: 600; white-space: nowrap; }
+.pp-what { min-width: 0; overflow-wrap: anywhere; }
+.pp-type, .pp-station, .pp-part, .pp-done { display: inline-block; margin-left: 1.5mm; padding: 0 1mm; border-radius: .8mm; font-size: .85em; border: 1px solid #ccc; }
+.pp-type { color: var(--type-color, #333); border-color: var(--type-color, #ccc); font-weight: 600; }
+.pp-done { color: #186a35; border-color: #9bd0ad; }
+.pp-note { display: block; color: #444; font-style: italic; }
+.pp-clamp .pp-note { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.pp-bg { border-left-style: dashed; color: #333; }
+.pp-office { border-left-color: #5B6B82; }
+.pp-absence { background: #e8f1f8; border-left: 2.5px solid #3a78a8; padding: .3mm 1.5mm; margin: .5mm 0; font-weight: 600; }
+.pp-empty { color: #777; font-style: italic; margin: .5mm 0; }
+.pp-totals { flex: none; margin-top: auto; display: flex; flex-wrap: wrap; gap: 1mm 5mm; border-top: 1.5px solid #7C1874; padding-top: 1mm; }
+.pp-muted { color: #666; }
+.pp-footer { flex: none; min-height: 1.2em; text-align: right; font-weight: 700; color: #7C1874; }
+.pp-multi .pp-totals { margin-top: 1mm; }
+.pp-multi .pp-footer { margin-top: auto; }
+.pp-compact { gap: 1mm; } .pp-compact .pp-days { gap: .8mm; } .pp-compact .pp-job { margin: .2mm 0; padding-top: 0; padding-bottom: 0; } .pp-compact .pp-dayhead { margin-bottom: .2mm; }
+.pp-fit .warn-box { margin: .3rem 0; }
+.pp-btn { background: none; border: 0; padding: 0 .2rem; cursor: pointer; font-size: .85rem; opacity: .55; }
+.pp-btn:hover, .pp-btn:focus-visible { opacity: 1; }
+@media print {
+  html.pp-printing body > *:not(.pp-root) { display: none !important; }
+  html.pp-printing body { background: #fff; }
+  html.pp-printing .pp-root { display: block; }
+  .pp-btn { display: none !important; }
+}
+.pp-dialog fieldset > label.check { display: flex; margin: .2rem 0; }
+.pp-dialog .inline-row { flex-wrap: wrap; } .pp-dialog .inline-row label.check { white-space: nowrap; } .pp-dialog .inline-row select { flex: 1 1 12rem; }
