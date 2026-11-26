@@ -13,6 +13,7 @@ import { editAssignment, editTemplate, deleteTemplate, saveTemplateTimes, openWh
 import { moveWholeJob, copyWholeJob, loadJobRows, restoreJob, splitText } from '../jobSeries.js';
 import { editDayHours } from './hoursEditor.js';
 import { openExport } from './exportDialog.js';
+import { openPrintDialog } from './printPeople.js';
 import { personDay, placeOn, isTimed, DEFAULT_HOURS, fmtMin, toMin } from '../daytime.js';
 import { makeHours, hoursText, oneOffText, WEEKDAY_NAMES, isoDow } from '../hours.js';
 import { placeJob, segmentsOf, pauses, breakMinutes } from '../timing.js';
@@ -326,6 +327,16 @@ export async function renderPlanner(main) {
   ctx.demand = demand; // for "Covers demand" in the job form
   ctx.todos = todos;   // for "For to-do" on office jobs
   const reload = () => renderPlanner(main);
+  // ---- print: whole team (as on screen) or one page per person
+  const printDialog = (opts = {}) => openPrintDialog({
+    people: data.people,
+    iso: view === 'day' ? viewDay : toISO(monday),
+    period: view === 'day' ? 'day' : 'week',
+    ctxFor: async (mon) => (mon === toISO(monday) ? ctx : printCtxFor(mon)),
+    onTeam: printTeam,
+    ...opts,
+  });
+  const printPerson = (p) => printDialog({ layout: 'person', personIds: [p.id] });
 
   // Rows: active people, plus inactive people who still have work/absence this week.
   const busy = new Set([...data.assignments.map((a) => a.person_id), ...data.absences.map((a) => a.person_id)]);
@@ -556,7 +567,7 @@ export async function renderPlanner(main) {
     ),
     h('div', { class: 'planner-actions' },
       view === 'week' ? h('button', { class: 'btn btn-sm', onclick: () => document.getElementById('weekly-summary')?.scrollIntoView({ behavior: 'smooth' }) }, 'Summary ↓') : null,
-      h('button', { class: 'btn btn-sm', title: `Print this ${view === 'day' ? 'day' : 'week'} on A4 landscape`, onclick: () => window.print() }, 'Print'),
+      h('button', { class: 'btn btn-sm', title: 'Print the whole team, or one page per person', onclick: () => printDialog() }, 'Print'),
       h('button', { class: 'btn btn-sm', title: 'Download a spreadsheet: timesheet, absences, summaries, test capacity', onclick: () => openExport({ weekMonday: monday }) }, 'Export to Excel'),
       admin && view === 'week' ? h('button', { class: 'btn btn-sm', onclick: () => copyLastWeek({ ctx, monday, rows, onDone: reload }) }, 'Copy last week') : null,
     ),
@@ -596,7 +607,8 @@ export async function renderPlanner(main) {
               isoDays.map((iso) => h('td', { class: `day-cell ${iso === todayISO ? 'is-today' : ''}` }, capPills(iso)))) : null,
             rows.map((p) => h('tr', { class: p.active ? '' : 'inactive', 'data-person': p.id },
               h('th', { class: 'sticky-col person-cell', scope: 'row' },
-                h('div', { class: 'person-name' }, p.name, p.active ? null : h('span', { class: 'tag tag-muted' }, 'inactive')),
+                h('div', { class: 'person-name' }, p.name, p.active ? null : h('span', { class: 'tag tag-muted' }, 'inactive'),
+                  h('button', { type: 'button', class: 'pp-btn no-print', title: `Print this person (${p.name})`, 'aria-label': `Print this person: ${p.name}`, onclick: () => printPerson(p) }, '🖨')),
                 p.job_title ? h('div', { class: 'muted small' }, p.job_title) : null,
               ),
               isoDays.map((iso) => h('td', { class: `day-cell ${iso === todayISO ? 'is-today' : ''} ${ctx.hoursFor(p.id, iso).works ? '' : 'is-offday'}`, 'data-day': iso, ...dropAttrs(p, iso) }, cell(p, iso))),
@@ -618,7 +630,8 @@ export async function renderPlanner(main) {
     hasAreas ? h('div', { class: 'phone-cap' }, h('span', { class: 'muted small' }, 'Test capacity: '), capPills(isoDays[mobileDay])) : null,
     rows.length
       ? rows.map((p) => h('div', { class: 'phone-person card' },
-          h('div', { class: 'person-name' }, p.name, p.job_title ? h('span', { class: 'muted small' }, ` · ${p.job_title}`) : null),
+          h('div', { class: 'person-name' }, p.name, p.job_title ? h('span', { class: 'muted small' }, ` · ${p.job_title}`) : null,
+            h('button', { type: 'button', class: 'pp-btn no-print', title: `Print this person (${p.name})`, 'aria-label': `Print this person: ${p.name}`, onclick: () => printPerson(p) }, '🖨')),
           cell(p, isoDays[mobileDay]),
         ))
       : h('div', { class: 'empty' }, 'No team members yet.'),
@@ -660,9 +673,10 @@ export async function renderPlanner(main) {
       toolbar,
       panel,
       recurringPanel(ctx, personById, reload),
-      dayView({ ctx, rows, iso: viewDay, isoDays, days, todayISO, admin, hasAreas, capPills, openJob, warningsOf, edit }),
+      dayView({ ctx, rows, iso: viewDay, isoDays, days, todayISO, admin, hasAreas, capPills, openJob, warningsOf, edit, printPerson }),
     );
     openPendingPlan();
+    printAfterLoad();
     return;
   }
   mount(main,
@@ -677,10 +691,32 @@ export async function renderPlanner(main) {
     summaryCard({ monday, data: ctx, notes: summaryDemand.notes, weekLabel }),
   );
   openPendingPlan();
+  printAfterLoad();
+}
+
+/** A planner ctx for the week starting `mondayIso` (printing another week). */
+export async function printCtxFor(mondayIso) {
+  const d = await loadWeek(fromISO(mondayIso));
+  if (reportError(d.error, 'Loading the week')) return null;
+  return makeCtx(d);
+}
+/** Print the planner as on screen: the week grid, or the Day timeline for one day. */
+export function printTeam(period, iso) {
+  const target = period === 'day' ? `#/planner?view=day&day=${iso}` : `#/planner?week=${toISO(mondayOf(fromISO(iso)))}`;
+  if (location.hash === target) { window.print(); return; }
+  try { sessionStorage.setItem('printAfterLoad', target); } catch { /* ignore */ }
+  location.hash = target;
+}
+function printAfterLoad() {
+  let want = null;
+  try { want = sessionStorage.getItem('printAfterLoad'); } catch { /* ignore */ }
+  if (!want || want !== location.hash) return;
+  try { sessionStorage.removeItem('printAfterLoad'); } catch { /* ignore */ }
+  setTimeout(() => window.print(), 400);
 }
 
 // ------------------------------------------------------------------ Day timeline view
-function dayView({ ctx, rows, iso, isoDays, days, todayISO, admin, hasAreas, capPills, openJob, warningsOf, edit }) {
+function dayView({ ctx, rows, iso, isoDays, days, todayISO, admin, hasAreas, capPills, openJob, warningsOf, edit, printPerson }) {
   const isToday = iso === todayISO;
   const go = (d) => { location.hash = planHash({ view: 'day', day: d }); };
   const nav = h('div', { class: 'day-nav' },
@@ -708,6 +744,7 @@ function dayView({ ctx, rows, iso, isoDays, days, todayISO, admin, hasAreas, cap
     onFree: (person, s, e) => edit({ person, iso, times: { start: fmtMin(s), end: fmtMin(e) } }),
     warningsOf: (a, p) => warningsOf(a, p, iso),
     notesOf: (a, p) => ctx.breakNotes(a, p.name, iso),
+    onPrintPerson: printPerson,
   });
   const card = h('section', { class: 'card card-flush day-timeline' },
     h('div', { class: 'dt-top no-print' }, nav),

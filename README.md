@@ -243,7 +243,8 @@ Pumps are tested several at a time, so the planner adds up the pumps on test tha
   in light and dark mode, `npm run test:timing` checks job timing, `npm run test:shared` checks shared stations, `npm run test:demand`
   checks demand linked to jobs, `npm run test:office` checks office work, to-dos, stages and completed units,
   `npm run test:parts` checks jobs over several days (auto split, edit any part, move, drag, adjust, delete, copy),
-  `npm run test:corrections` checks corrections to completed units, and `npm run test:unit` runs the unit tests
+  `npm run test:corrections` checks corrections to completed units, `npm run test:print` prints real PDFs
+  (one page per person; 40+ jobs; a 15-job day; a week too big for one page), and `npm run test:unit` runs the unit tests
   for the re-flow logic and corrections (`tests/unit/`, plain Node — no browser needed)
   (all need Playwright:
   `npm i -D playwright && npx playwright install chromium`).
@@ -518,11 +519,28 @@ stage a line underneath shows planned / done **per stage** for the demand due ("
 (or *Not specified*) with the drop-down. General notes without a pump model are not counted.
 
 ## Printing
-**Print** on the planner prints the displayed week on **A4 landscape**: page 1 is the plan (who does what
-each day, absences, build-type colours, working hours, printed date and name), page 2 is the weekly
-summary. Navigation, buttons and the demand panel are left out. In the print dialog, keep
-"Background graphics" ticked for the colours. Printing from a phone also gives the full week grid. In **Day timeline** view, **Print** prints that day's
-timeline on one A4 landscape page.
+**Print** (planner and Day timeline) opens a dialog:
+- **Layout:** **Whole team (current layout)** prints the planner as on screen: the week grid, or the Day
+  timeline for one day (A4 landscape; page 2 of the week is the weekly summary). **One page per person** prints
+  one A4 page for each person, with a page break between people: **landscape for a week, portrait for a day**.
+- **Period:** *This week* or *One day* (choose the day). **People:** everyone or the ones you tick.
+- **🖨 Print this person** on each person's row in the week planner, the Day timeline and the People page opens
+  the dialog for just that person.
+
+Each person's page has a header (name, role, their working hours / pattern, the week or date, printed by and
+when), then each day: the jobs in time order with start–end, task, pump(s) and quantity, build type, station,
+⏱ background and 💻 office markers and notes; absences and one-off hour changes; a small busy / free line per day;
+and a totals line (busy, free, production vs office hours, units).
+
+**Everything fits on that person's single page.** The page is laid out at its printed size before printing and,
+if needed, made smaller step by step: compact spacing → notes longer than 2 lines shortened with "…" (in print
+only — the full text stays on screen) → smaller text, down to 7pt (still readable) → two columns for busy days.
+Nothing is cut off. If a week still doesn't fit at 7pt in two columns, it continues on the next page with
+**"Continued on next page"** (and "— continued (page 2)" on top) instead of losing anything, and the dialog warns
+first, e.g. *"⚠ Irwin's week needs 2 pages"*. It also says which pages were made smaller.
+
+Printed pages are always light (also from dark mode), and build types keep their colours. Works in Chrome and
+Edge; keep "Background graphics" ticked in the print dialog for the colours.
 
 ## History (admin)
 **History** lists every change to planner jobs, absences, demand notes, to-dos, completed units, planned

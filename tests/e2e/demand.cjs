@@ -131,7 +131,10 @@ const card = (pg, id) => pg.locator(`.dcard[data-note="${id}"]`);
   const titles = await panel.locator('.dpanel-title').allTextContents();
   ok(titles.length === 1 && /Partly planned \(2\)/.test(titles[0]) && !/Fully|Needs/.test(titles.join()), 'planner panel: only notes still to plan (Partly planned 2; the fully planned QPro note has left) — ' + titles.join(' | '));
   ok(await panel.getByRole('button', { name: 'Plan this' }).count() >= 2, 'planner panel: "Plan this" buttons');
-  // weekly summary uses the linked quantities
+  // weekly summary uses the linked quantities (the week the QPro note is due, so it counts as "demand due")
+  // (a note due on a weekend counts in the following week: the summary counts demand due by Friday)
+  { const dq = new Date(`${dueQ}T12:00:00`); const wk = iso(add(dq, dq.getDay() === 6 ? 2 : dq.getDay() === 0 ? 1 : 0));
+    await pg.goto(BASE + `#/planner?week=${wk}`); await pg.waitForSelector('table.summary'); await settle(pg, 300); }
   const sumTxt = await pg.locator('table.summary').textContent();
   ok(/Planned for it/.test(sumTxt) && /Still to plan/.test(sumTxt), 'weekly summary: "Planned for it" and "Still to plan" columns');
   const qRow = (await pg.$$eval('table.summary tr', (rows) => rows.map((r) => [...r.children].map((c) => c.textContent.trim()).join(' | ')))).find((r) => /QPro 2000 \| Production/.test(r)) || '';

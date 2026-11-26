@@ -78,7 +78,7 @@ export function dayBar(day) {
  * handlers: onJob(job, person), onFree(person, s, e), warningsOf(job, person) → [msgs]
  * Returns { el, placeNow(minutes) }.
  */
-export function dayTimeline({ ctx, rows, iso, isToday, admin, onJob, onFree, warningsOf, notesOf = () => [], capacity }) {
+export function dayTimeline({ ctx, rows, iso, isToday, admin, onJob, onFree, warningsOf, notesOf = () => [], capacity, onPrintPerson = null }) {
   const sample = ctx.dayOf(rows[0]?.id, iso);
   const { T0, T1 } = viewRange(...rows.map((p) => ctx.dayOf(p.id, iso)));
   const cols = (T1 - T0) / SLOT;
@@ -219,7 +219,8 @@ export function dayTimeline({ ctx, rows, iso, isToday, admin, onJob, onFree, war
 
     const hrs = day.hours;
     return h('div', { class: `dt-row ${absence ? 'is-absent' : ''} ${day.nonWorking ? 'is-offday' : ''}`, 'data-person': p.id },
-      h('div', { class: 'dt-name' }, h('b', {}, p.name),
+      h('div', { class: 'dt-name' }, h('b', {}, p.name,
+        onPrintPerson ? h('button', { type: 'button', class: 'pp-btn no-print', title: `Print this person (${p.name})`, 'aria-label': `Print this person: ${p.name}`, onclick: () => onPrintPerson(p) }, '🖨') : null),
         h('small', { class: 'dt-hours' }, absence ? (ABSENCE_TYPES[absence.absence_type] || 'Absent') : day.nonWorking ? 'Not working' : `${fmtMin(day.ws)}–${fmtMin(day.we)}${hrs?.oneOff ? ' (today only)' : ''}`),
         absence || day.nonWorking ? null : h('small', {}, busyFreeText(day))),
       track, untimedCell);

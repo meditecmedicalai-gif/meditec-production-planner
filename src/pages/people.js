@@ -5,6 +5,8 @@ import { makeHours, patternSummary, hoursText, hasOverrides } from '../hours.js'
 import { editPersonPattern } from './hoursEditor.js';
 import { toISO, today, mondayOf, addDays, fromISO, fmtDate } from '../dates.js';
 import { fmtMin, toMin } from '../daytime.js';
+import { openPrintDialog } from './printPeople.js';
+import { printCtxFor, printTeam } from './planner.js';
 
 let showInactive = false;
 
@@ -67,7 +69,9 @@ export async function renderPeople(main) {
     countCell(p).textContent = String(activeModels.filter((m) => has(p, m)).length);
     return h('tr', { class: p.active ? '' : 'inactive' },
       h('th', { class: 'sticky-col person-cell', scope: 'row' },
-        h('div', { class: 'person-name' }, p.name, p.active ? null : h('span', { class: 'tag tag-muted' }, 'inactive')),
+        h('div', { class: 'person-name' }, p.name, p.active ? null : h('span', { class: 'tag tag-muted' }, 'inactive'),
+          h('button', { type: 'button', class: 'pp-btn no-print', title: `Print this person (${p.name}) — this week`, 'aria-label': `Print this person: ${p.name}`,
+            onclick: () => openPrintDialog({ people: people.data, iso: toISO(mondayOf(today())), period: 'week', layout: 'person', personIds: [p.id], ctxFor: printCtxFor, onTeam: printTeam }) }, '🖨')),
         p.job_title ? h('div', { class: 'muted small' }, p.job_title) : null,
         p.notes ? h('div', { class: 'muted small person-notes', title: p.notes }, p.notes) : null,
       ),
