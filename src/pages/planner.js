@@ -5,7 +5,7 @@ import { demandPanel, loadDemand, takePendingPlan, noteText } from './demand.js'
 import { summaryNotes } from './summary.js';
 import { loadTodos } from './todos.js';
 import { loadSummaryDemand, summaryCard } from './summary.js';
-import { isBackground, coversDay, endDateOf, timeLabel, clashes, hm, pumpLabel, ABSENCE_TYPES } from '../jobs.js';
+import { isBackground, coversDay, endDateOf, timeLabel, clashes, hm, pumpLabel, untrainedModels, pumpQtys, ABSENCE_TYPES } from '../jobs.js';
 import { capacityConfig, capacityForDay, level, stationMismatch, occupancyText, equipmentShared } from '../capacity.js';
 import { occupancySvg, occupancyPopover } from './occupancy.js';
 import { describe as describeRepeat, matches as repeatMatches } from '../recurring.js';
@@ -281,14 +281,12 @@ export function makeCtx(data) {
       }
       return out;
     },
-    /** Untrained (skill warnings skip "Any / mixed pump"). */
+    /** Untrained on any of the job's pump models (mixed pumps: each model listed; "Any / unknown" is not checked). */
     warningsFor(a, personName) {
       const out = [];
       const task = data.taskById.get(a.task_id);
-      const model = data.modelById.get(a.pump_model_id);
-      if (task?.requires_pump && !a.any_pump && model && !data.skills.has(`${a.person_id}|${a.pump_model_id}`)) {
-        out.push(`${personName} is not trained on ${model.name}.`);
-      }
+      const untrained = task?.requires_pump ? untrainedModels(a, data.skills).map((id) => data.modelById.get(id)?.name).filter(Boolean) : [];
+      if (untrained.length) out.push(`${personName} is not trained on ${untrained.join(', ')}.`);
       const wrongStation = stationMismatch(a, data.capacity);
       if (wrongStation) out.push(wrongStation);
       return out;
@@ -453,7 +451,8 @@ export async function renderPlanner(main) {
     const cover = a.demand_id ? demand.items.find((i) => i.note.id === a.demand_id) : null;
     const office = task?.category === 'office';
     const forTodo = a.todo_id && todos.ready ? todos.items.find((x) => x.todo.id === a.todo_id) : null;
-    const label = [pump, type?.name, task?.name, a.qty_target != null ? a.qty_target : null].filter((x) => x != null).join(' · ');
+    const mixed = a.any_pump;   // several pumps: "Rework · QPro ×3, MediAir ×2, Mediflex ×1"
+    const label = (mixed ? [task?.name, pump, type?.name] : [pump, type?.name, task?.name, a.qty_target != null ? a.qty_target : null]).filter((x) => x != null).join(' · ');
     return h('button', {
       type: 'button',
       class: `chip ${bg ? 'chip-bg' : 'chip-att'} ${office ? 'chip-office' : ''} ${continuing ? 'chip-cont' : ''} ${warnings.length ? 'chip-warn' : ''} ${notes.length ? 'chip-note' : ''} ${a.any_pump ? 'chip-any' : ''}`,
@@ -473,10 +472,12 @@ export async function renderPlanner(main) {
         notes.length ? h('span', { class: 'chip-note-icon', 'aria-label': 'Runs across a break', title: notes.join(' ') }, '⏰') : null,
         a.recurring_id ? h('span', { class: 'chip-repeat', 'aria-label': 'Recurring job', title: 'Recurring job' }, '🔁') : null,
         office ? h('span', { class: 'chip-office-ico', 'aria-label': 'Office work' }, '💻') : null,
-        pump ? h('span', { class: 'chip-model' }, pump) : null,
+        pump && !mixed ? h('span', { class: 'chip-model' }, pump) : null,
         type ? typeTag(type) : null,
         h('span', { class: 'chip-task' }, task?.name ?? '?'),
-        a.qty_target != null && !continuing && !(part && part.n > 1) ? h('span', { class: 'chip-qty' }, `× ${a.qty_target}`, a.qty_done != null ? h('span', { class: 'chip-done' }, ` · ${a.qty_done} done`) : null) : null,
+        mixed && pump ? h('span', { class: 'chip-mix' }, ` · ${pump}`) : null,
+        a.qty_target != null && !continuing && !(part && part.n > 1)
+          ? h('span', { class: 'chip-qty' }, mixed ? '' : `× ${a.qty_target}`, a.qty_done != null ? h('span', { class: 'chip-done' }, `${mixed ? ' ·' : ' ·'} ${a.qty_done} done`) : null) : null,
       ),
       equip || part || cover || forTodo ? h('span', { class: 'chip-meta' }, part ? h('span', { class: 'part-tag', title: `Continued job: part ${part.n} of ${part.total}` }, `↪ part ${part.n} of ${part.total}`) : null,
         forTodo ? h('span', { class: 'demand-tag todo-tag', title: `For to-do: ${forTodo.todo.title}` }, '☑ to-do') : null,

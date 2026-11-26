@@ -8,7 +8,7 @@ function seed() {
   tasks.push({ id: uid(), name: 'Soak / burn-in test', requires_pump: true, counts_as_output: false, is_background: true, active: true, sort_order: 35 });
   tasks.push({ id: uid(), name: 'Quality testing', requires_pump: true, counts_as_output: false, is_background: false, active: true, sort_order: 36 });
   for (const [i, n] of ['Documentation', 'Odoo / ERP', 'Meetings', 'Admin / Email'].entries()) tasks.push({ id: uid(), name: n, requires_pump: false, counts_as_output: false, is_background: false, active: true, sort_order: 900 + i, category: 'office' });
-  for (const t of tasks) { t.is_testing = ['Functional test / calibration', 'Quality testing', 'Soak / burn-in test'].includes(t.name); t.allows_any_pump = t.name === 'Repair'; t.category = t.category || 'production'; }
+  for (const t of tasks) { t.is_testing = ['Functional test / calibration', 'Quality testing', 'Soak / burn-in test'].includes(t.name); t.allows_any_pump = ['Repair', 'Rework'].includes(t.name); t.category = t.category || 'production'; }
   tasks.sort((a, b) => a.sort_order - b.sort_order);
   const equipment = [['Quality Check','areaMain',5],['Medicare / Mediflex test bench','areaMM',6],['Test rig 1',null,10],['Test rig 2',null,20],['Soak rack',null,30]].map(([n,a,o])=>({ id: n === 'Quality Check' ? 'eqQC' : n.startsWith('Medicare') ? 'eqMM' : uid(), name: n, notes: null, test_area_id: a, active: true, sort_order: o }));
   const build_types = [['Production','#475569'],['Trial','#b45309'],['Rental','#7c3aed'],['Customer','#0369a1']].map(([n,c],i)=>({id:uid(),name:n,color:c,is_default:i===0,active:true,sort_order:(i+1)*10}));
@@ -123,13 +123,16 @@ module.exports = function makeHandler(role, db) {
       if (table === 'assignments') for (const a of created) { if (a.end_time && !a.start_time) return json(400, { code: '23514', message: 'violates check constraint' });
         const t = db.tasks.find(t => t.id === a.task_id);
         a.any_pump = !!a.any_pump; a.recurring_id = a.recurring_id ?? null; a.recurring_detached = !!a.recurring_detached;
-        if (a.any_pump && !(t && t.allows_any_pump)) return json(400, { code: '23514', message: '"Any / mixed pump" is only allowed for repair-type tasks' });
+        if (a.any_pump && !(t && t.allows_any_pump)) return json(400, { code: '23514', message: `"${t?.name}" doesn't allow mixed pumps` });
+        if (a.any_pump && Array.isArray(a.pump_mix) && a.pump_mix.length) a.qty_target = a.pump_mix.reduce((x, m) => x + m.qty, 0);   // quantity = the sum
         if (t && t.requires_pump && !a.pump_model_id && !a.any_pump) return json(400, { code: '23502', message: 'A pump model is required for this task' });
         if (t && t.requires_pump && !a.build_type_id) a.build_type_id = db.build_types.find(b => b.is_default).id; } rows.push(...created);
       return wantRep ? json(201, single ? created[0] : created) : json(201);
     }
     if (m === 'PATCH') { const body = JSON.parse(req.postData()); const hit = filt(rows, params);
-      for (const b of Object.values(body)) {} for (const r of hit) Object.assign(r, body, table === 'demand_notes' ? { updated_by: 'u1', updated_at: new Date().toISOString() } : {}); return json(204); }
+      for (const b of Object.values(body)) {} for (const r of hit) Object.assign(r, body, table === 'demand_notes' ? { updated_by: 'u1', updated_at: new Date().toISOString() } : {});
+      if (table === 'assignments') for (const r of hit) if (r.any_pump && Array.isArray(r.pump_mix) && r.pump_mix.length) r.qty_target = r.pump_mix.reduce((x, m) => x + m.qty, 0);
+      return json(204); }
     if (m === 'DELETE') { const hit = filt(rows, params);
       for (const r of hit) { if (db.assignments.some(a => a.person_id === r.id || a.pump_model_id === r.id || a.task_id === r.id)) return json(409, { code:'23503', message:'violates foreign key constraint' }); }
       if (table === 'todos') for (const a of db.assignments) if (hit.some(r => r.id === a.todo_id)) a.todo_id = null;

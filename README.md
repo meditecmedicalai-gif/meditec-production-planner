@@ -58,7 +58,9 @@ Live site (once deployed): `https://meditecmedicalai-gif.github.io/meditec-produ
    [`supabase/tests/report_013_parts.sql`](supabase/tests/report_013_parts.sql) — it lists jobs with duplicate,
    overlapping or stray parts left by the old app. Fix the rows marked *clean-up* with
    [`supabase/tests/cleanup_013_parts.sql`](supabase/tests/cleanup_013_parts.sql) (optional, after checking the
-   report; safe to run again), and open + Save the jobs marked *open + Save*.
+   report; safe to run again), and open + Save the jobs marked *open + Save*. Then
+   [`014_mixed_pumps.sql`](supabase/migrations/014_mixed_pumps.sql) (the "Allows mixed pumps" task setting —
+   on for Repair and Rework — and the rules for a quantity per pump model on one job).
 
 ### 3. Lock down sign-in
 1. **Authentication → Sign In / Providers** (called *Providers* in some versions):
@@ -243,7 +245,8 @@ Pumps are tested several at a time, so the planner adds up the pumps on test tha
   in light and dark mode, `npm run test:timing` checks job timing, `npm run test:shared` checks shared stations, `npm run test:demand`
   checks demand linked to jobs, `npm run test:office` checks office work, to-dos, stages and completed units,
   `npm run test:parts` checks jobs over several days (auto split, edit any part, move, drag, adjust, delete, copy),
-  `npm run test:corrections` checks corrections to completed units, and `npm run test:unit` runs the unit tests
+  `npm run test:corrections` checks corrections to completed units, `npm run test:mixed` checks mixed pumps on one
+  job, and `npm run test:unit` runs the unit tests
   for the re-flow logic and corrections (`tests/unit/`, plain Node — no browser needed)
   (all need Playwright:
   `npm i -D playwright && npx playwright install chromium`).
@@ -275,11 +278,20 @@ Pumps are tested several at a time, so the planner adds up the pumps on test tha
   saving, and a **Test areas** card on Today (pumps on test now and today's peak). The Medicare / Mediflex
   bench only appears in the row on days something is booked on it (its limit and warnings always apply).
 
-## "Any / mixed pump"
-Repair-type tasks (Settings → Tasks → *Allows "Any / mixed pump"*) can be planned on **Any / mixed pump**,
-e.g. rental repairs. When the pumps are known you can list them ("2× QPro, 1× Mediflex"). Training warnings
-are skipped for these jobs, and summaries show them as their own **Any / mixed** row. Demand notes can also
-be for "Any / mixed pump".
+## Mixed pumps on one job (e.g. Rework)
+Tasks with **Allows mixed pumps** (Settings → Tasks — on for Repair and Rework after migration 014, off for
+everything else) can carry several pump models on one job. In the job form choose **Several pumps (mixed)** and
+enter a quantity per model — e.g. QPro 2000 × 3, MediAir × 2, Mediflex × 1 — plus **Any / unknown** for pumps not
+identified yet. The job's quantity is the **sum** (the database keeps it so). The chip reads **"Rework · QPro ×3,
+MediAir ×2, Mediflex ×1"**.
+- Each model counts **on its own** in the weekly summary, Today, the Excel export (Timesheet lists the pumps;
+  Summary by pump has a row per model) and test capacity (each model towards its own test area and limit groups;
+  a one-at-a-time bench counts the job once). Pumps not identified yet stay in their own **Any / unknown** row.
+- **Demand**: a mixed job can cover a note for any model it lists (or an "Any / mixed pump" note); only that
+  model's quantity counts towards the note.
+- **Training**: the person is checked against every model listed ("Amira is not trained on MediAir, Mediflex");
+  "Any / unknown" isn't checked.
+- Recurring jobs on these tasks are "Any / unknown pump" (the pumps are entered on each job).
 
 ## Recurring jobs
 - In **Add work**, choose **Repeat**: every working day, every day, weekly on chosen days, or every N weeks;
@@ -556,3 +568,4 @@ This is a planning aid, not a controlled QMS record.
 13. ✅ Demand linked to jobs: Plan this, Covers demand, automatic status, planned too late, clearer cards
 14. ✅ Office work, to-dos, production stages, completed units and manual planned quantities
 15. ✅ Jobs over several days as one job (auto split, re-flow, drag-and-drop, adjust a part); completed-unit corrections
+16. ✅ Mixed pumps on one job (Repair, Rework): a quantity per pump model, counted per model everywhere

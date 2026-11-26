@@ -106,12 +106,36 @@ export function clashes(job, others, taskById, { isShared = () => false } = {}) 
   return { equipment: eq, person };
 }
 
-/** "QPro 2000", "Any / mixed pump" or "Mixed: 2× QPro, 1× Mediflex". */
+/**
+ * The pumps on a job, per model: [{ pump_model_id | null, qty }]. A job for one model is one entry.
+ * A job with mixed pumps (tasks with "Allows mixed pumps", e.g. Rework) lists each model with its
+ * quantity; pumps not identified yet are { pump_model_id: null } ("Any / unknown"). Anything in the
+ * quantity not covered by the list also counts as "Any / unknown".
+ */
+export function pumpQtys(job) {
+  const total = job.qty_target || 0;
+  if (!job.any_pump) return job.pump_model_id ? [{ pump_model_id: job.pump_model_id, qty: total }] : [];
+  const list = (job.pump_mix || []).filter((x) => x && x.qty > 0).map((x) => ({ pump_model_id: x.pump_model_id || null, qty: x.qty }));
+  const listed = list.reduce((t, x) => t + x.qty, 0);
+  if (total > listed) {
+    const unknown = list.find((x) => !x.pump_model_id);
+    if (unknown) unknown.qty += total - listed; else list.push({ pump_model_id: null, qty: total - listed });
+  }
+  return list;
+}
+/** Pump models named on a job (no "Any / unknown"). */
+export const pumpModelsOf = (job) => [...new Set(pumpQtys(job).map((x) => x.pump_model_id).filter(Boolean))];
+export const UNKNOWN_PUMP = 'Any / unknown';
+/** Pump models on the job the person isn't trained on. skills: Set of "personId|modelId". */
+export const untrainedModels = (job, skills) => pumpModelsOf(job).filter((id) => !skills.has(`${job.person_id}|${id}`));
+
+/** "QPro 2000", or for mixed pumps "QPro ×3, MediAir ×2, Mediflex ×1, Any / unknown ×1" ("Any / unknown pump" if none named). */
 export function pumpLabel(job, modelById, { short = false } = {}) {
   if (job.any_pump) {
-    const mix = (job.pump_mix || []).filter((x) => x && x.qty > 0 && modelById.get(x.pump_model_id));
-    if (!mix.length) return 'Any / mixed pump';
-    return `Mixed: ${mix.map((x) => { const m = modelById.get(x.pump_model_id); return `${x.qty}× ${m.short_code || m.name}`; }).join(', ')}`;
+    const list = pumpQtys(job);
+    if (!list.some((x) => x.pump_model_id)) return `${UNKNOWN_PUMP} pump`;
+    const name = (id) => { const m = modelById.get(id); return m ? (m.short_code || m.name) : '?'; };
+    return list.map((x) => `${x.pump_model_id ? name(x.pump_model_id) : UNKNOWN_PUMP} ×${x.qty}`).join(', ');
   }
   const m = modelById.get(job.pump_model_id);
   return m ? (short && m.short_code ? m.short_code : m.name) : null;
