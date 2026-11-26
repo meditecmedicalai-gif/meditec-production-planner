@@ -94,17 +94,58 @@ returns trigger
 language plpgsql
 set search_path = ''
 as $$
--- Job rules. The same function is defined in migrations 002 and 005 so that
+-- Job rules. The same function is defined in migrations 002, 005 and 014 so that
 -- re-running any migration, in any order, keeps the current rules.
 -- Columns added by later migrations are read via jsonb so this also works
 -- before they exist.
 declare
   task     jsonb;
   any_pump boolean := coalesce((to_jsonb(new) ->> 'any_pump')::boolean, false);
+  mix      jsonb := to_jsonb(new) -> 'pump_mix';
+  e        jsonb;
+  q        numeric;
+  mid      text;
+  total    int := 0;
+  seen     text[] := '{}';
+  unknowns int := 0;
 begin
   select to_jsonb(t) into task from public.tasks t where t.id = new.task_id;
+  -- Mixed pumps (several pump models on one job) only on tasks with "Allows mixed pumps"
   if any_pump and not coalesce((task ->> 'allows_any_pump')::boolean, false) then
-    raise exception '"Any / mixed pump" is only allowed for repair-type tasks' using errcode = '23514';
+    raise exception '"%" doesn''t allow mixed pumps (Settings → Tasks → Allows mixed pumps)', coalesce(task ->> 'name', 'This task')
+      using errcode = '23514';
+  end if;
+  -- The pumps per model: [{ "pump_model_id": "…" or null (= Any / unknown), "qty": n }]; quantity = the sum
+  if mix is not null and jsonb_typeof(mix) = 'array' and jsonb_array_length(mix) > 0 then
+    if not any_pump then
+      raise exception 'A list of pumps per model is only for jobs with mixed pumps' using errcode = '23514';
+    end if;
+    for e in select value from jsonb_array_elements(mix) loop
+      if jsonb_typeof(e) <> 'object' or jsonb_typeof(e -> 'qty') is distinct from 'number' then
+        raise exception 'Each pump model in the list needs a quantity' using errcode = '23514';
+      end if;
+      q := (e ->> 'qty')::numeric;
+      if q <= 0 or q <> trunc(q) then
+        raise exception 'Pump quantities must be whole numbers above 0' using errcode = '23514';
+      end if;
+      mid := nullif(e ->> 'pump_model_id', '');
+      if mid is null then
+        unknowns := unknowns + 1;
+      else
+        if not exists (select 1 from public.pump_models m where m.id::text = mid) then
+          raise exception 'Unknown pump model in the list of pumps' using errcode = '23503';
+        end if;
+        if mid = any (seen) then
+          raise exception 'A pump model is listed twice — give it one quantity' using errcode = '23514';
+        end if;
+        seen := seen || mid;
+      end if;
+      total := total + q::int;
+    end loop;
+    if unknowns > 1 then
+      raise exception 'List "Any / unknown" once' using errcode = '23514';
+    end if;
+    new.qty_target := total;
   end if;
   if coalesce((task ->> 'requires_pump')::boolean, false) then
     if new.pump_model_id is null and not any_pump then

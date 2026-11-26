@@ -63,7 +63,7 @@ function fieldLabel(table, key) {
     start_date: 'From', end_date: 'To', absence_type: 'Type', name: 'Name', color: 'Colour',
     is_default: 'Default', active: 'Active', sort_order: 'Order',
     start_time: 'Start time', end_time: 'End time', end_date: 'Ends on', background: 'Runs', equipment_id: 'Equipment',
-    any_pump: 'Any / mixed pump', pump_mix: 'Actual pumps', recurring_id: 'Recurring job', recurring_date: 'Series date', recurring_detached: 'Edited on its own',
+    any_pump: 'Mixed pumps', pump_mix: 'Pumps (per model)', recurring_id: 'Recurring job', recurring_date: 'Series date', recurring_detached: 'Edited on its own',
     pattern: 'Repeats', weekdays: 'Days', interval_weeks: 'Every … weeks', title: 'Name', person_id: 'Person', max_pumps: 'Max pumps', skip_date: 'Skipped date',
     owner_id: 'For', due_date: 'Due', details: 'Details', checklist: 'Checklist', qty_done: 'Units done', todo_id: 'To-do',
     demand_id: 'Demand note', qty: 'Quantity', position: 'Position', category: 'Category', note: 'Note', status_override: 'Status (by hand)',
@@ -90,7 +90,7 @@ function fieldValue(key, v, L) {
     case 'start_time': case 'end_time': return hm(v);
     case 'equipment_id': return L.equipment.get(v) || '(deleted equipment)';
     case 'any_pump': case 'recurring_detached': return v ? 'yes' : 'no';
-    case 'pump_mix': return (v || []).map((x) => `${x.qty}× ${L.model.get(x.pump_model_id) || '?'}`).join(', ') || '—';
+    case 'pump_mix': return (v || []).map((x) => `${x.pump_model_id ? L.model.get(x.pump_model_id) || '?' : 'Any / unknown'} ×${x.qty}`).join(', ') || '—';
     case 'recurring_id': return 'linked';
     case 'weekdays': return (v || []).map((d) => ['', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'][d]).join(', ');
     case 'skip_date': case 'recurring_date': return day(v);
@@ -107,7 +107,7 @@ function describe(table, row, L) {
   const v = (k) => fieldValue(k, row[k], L);
   switch (table) {
     case 'assignments':
-      return [v('person_id'), v('work_date'), timeSummary(row), row.any_pump ? 'Any / mixed pump' : row.pump_model_id && v('pump_model_id'), row.build_type_id && v('build_type_id'),
+      return [v('person_id'), v('work_date'), timeSummary(row), row.any_pump ? (row.pump_mix?.length ? v('pump_mix') : 'Any / unknown pump') : row.pump_model_id && v('pump_model_id'), row.build_type_id && v('build_type_id'),
         v('task_id'), row.qty_target != null && `× ${row.qty_target}`,
         row.background === true && '⏱ background', row.background === false && 'attended',
         row.equipment_id && `on ${v('equipment_id')}`].filter(Boolean).join(' · ');

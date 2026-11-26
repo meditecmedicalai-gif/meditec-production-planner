@@ -41,6 +41,8 @@ async function login(role, vp) {
   const b = await chromium.launch(); const ctx = await b.newContext({ viewport: vp, timezoneId: 'Europe/London' }); const pg = await ctx.newPage();
   const errs = []; pg.on('pageerror', (e) => errs.push(e.message));
   await pg.route('https://example.supabase.co/**', mock(role, db)); await mock.mockRealtime(pg);
+  // "today" = Monday 07:00 of the test week, so default starts never depend on the day the tests run
+  await pg.clock.setFixedTime(new Date(`${D(0)}T07:00:00`));
   await pg.goto(BASE); await pg.fill('#email', 'p@x.com'); await pg.fill('#password', 'x'); await pg.click('button[type=submit]');
   await pg.waitForSelector('#main[data-loaded="1"]'); return { b, pg, errs };
 }

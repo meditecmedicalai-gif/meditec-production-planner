@@ -2,7 +2,7 @@
 // Times are minutes from midnight; dates are "YYYY-MM-DD".
 import { toISO, fromISO, addDays } from './dates.js';
 import { isTimed, placeOn, fmtMin } from './daytime.js';
-import { endDateOf, ABSENCE_TYPES } from './jobs.js';
+import { endDateOf, pumpQtys, ABSENCE_TYPES } from './jobs.js';
 
 /** "QPro 2000 · Quality testing ×5" */
 const jobTextPlain = (ctx, a) => [ctx.pump(a), ctx.taskById.get(a.task_id)?.name].filter(Boolean).join(' · ') + (a.qty_target != null ? ` ×${a.qty_target}` : '');
@@ -128,12 +128,15 @@ export function exportRows(ctx, { from, to, personIds = [], demand = null, todos
   for (const a of inRange) {
     const task = ctx.taskById.get(a.task_id);
     const type = ctx.typeById.get(a.build_type_id)?.name || 'Not specified';
-    const qty = a.qty_target || 0;
-    const mix = (a.pump_mix || []).filter((x) => x.qty > 0 && ctx.modelById.get(x.pump_model_id));
     const linked = Boolean(a.demand_id);
     if (task?.category === 'office') continue;
-    if (a.any_pump && mix.length) mix.forEach((m, i) => add(ctx.modelById.get(m.pump_model_id).name, type, task, m.qty, linked, i === 0 ? a.qty_done || 0 : 0));
-    else add(a.any_pump ? 'Any / mixed pump' : ctx.modelById.get(a.pump_model_id)?.name || '—', type, task, qty, linked, a.qty_done || 0);
+    // per pump model (mixed pumps: each model its own row; not identified yet → "Any / unknown pump").
+    // Units done fill the listed pumps in order.
+    let doneLeft = a.qty_done || 0;
+    for (const x of pumpQtys(a)) {
+      const d = Math.min(doneLeft, x.qty); doneLeft -= d;
+      add(x.pump_model_id ? ctx.modelById.get(x.pump_model_id)?.name || '—' : 'Any / unknown pump', type, task, x.qty, linked, d);
+    }
   }
   // Demand due in the range (or overdue and not done): needed, completed at the last stage, still to do
   for (const { note: n, state: s } of dueDemand(demand, from, to)) {
