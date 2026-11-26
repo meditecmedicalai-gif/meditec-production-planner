@@ -77,9 +77,10 @@ async function choosePeople(pg, ids) {
 async function printToPdf(pg, name, inspect = async () => null) {
   await dlg(pg).locator('.modal-actions .btn-primary').click(); await settle(pg, 900);
   await pg.waitForFunction(() => document.documentElement.classList.contains('pp-printing') && document.querySelector('.pp-root'));
-  const seen = await inspect();   // (page.pdf fires "afterprint", which puts the app back)
-  const file = path.join(out, `${name}.pdf`);
+  // measured as printed (the pages are only shown in print); page.pdf fires "afterprint", which puts the app back
   await pg.emulateMedia({ media: 'print' });
+  const seen = await inspect();
+  const file = path.join(out, `${name}.pdf`);
   const buf = await pg.pdf({ path: file, preferCSSPageSize: true, printBackground: true });
   await pg.emulateMedia({ media: 'screen' });
   const doc = await PDFDocument.load(buf);
@@ -90,7 +91,7 @@ async function printToPdf(pg, name, inspect = async () => null) {
   return { file, pages, text, seen };
 }
 /** Every page: nothing outside its box (no clipped text). */
-const unclipped = (pg) => pg.$$eval('.pp-root .pp-page', (ps) => ps.length > 0 && ps.every((p) => p.scrollHeight <= p.clientHeight + 1 && p.scrollWidth <= p.clientWidth + 1));
+const unclipped = (pg) => pg.$$eval('.pp-root .pp-page', (ps) => ps.length > 0 && ps.every((p) => p.clientHeight > 100 && p.scrollHeight <= p.clientHeight + 1 && p.scrollWidth <= p.clientWidth + 1));
 const cleanup = (pg) => pg.evaluate(() => { document.documentElement.classList.remove('pp-printing'); document.querySelectorAll('.pp-root').forEach((x) => x.remove()); });
 const isLandscapeA4 = (p) => Math.abs(p.w - 841.9) < 3 && Math.abs(p.h - 595.3) < 3;
 const isPortraitA4 = (p) => Math.abs(p.w - 595.3) < 3 && Math.abs(p.h - 841.9) < 3;
@@ -115,7 +116,7 @@ const isPortraitA4 = (p) => Math.abs(p.w - 595.3) < 3 && Math.abs(p.h - 841.9) <
     await pg.emulateMedia({ media: 'print', colorScheme: 'dark' });
     const colours = await amira.evaluate((e) => [getComputedStyle(e).backgroundColor, getComputedStyle(e).color]);
     const typeColours = await amira.locator('.pp-job').evaluateAll((js) => new Set(js.map((j) => getComputedStyle(j).borderLeftColor)).size);
-    await pg.emulateMedia({ media: 'screen' });
+    await pg.emulateMedia({ media: 'print' });
     return { at, jobs: await amira.locator('.pp-job').count(), bars: await amira.locator('.pp-bar').count(), unclipped: await unclipped(pg), colours, typeColours };
   });
   const a = r.seen;
@@ -126,7 +127,7 @@ const isPortraitA4 = (p) => Math.abs(p.w - 595.3) < 3 && Math.abs(p.h - 841.9) <
     '(a) header: name, role, hours, week, printed by + when');
   ok(a.jobs === 12, `(a) all 11 jobs, the overnight soak on both days (${a.jobs} lines)`);
   ok(/Rework · QPro ×3, MediAir ×2(?! ×5)/.test(a.at), '(a) mixed pumps printed per model: "Rework · QPro ×3, MediAir ×2"');
-  ok(/15:00–08:00 next day/.test(a.at) && /cont\.–08:00/.test(a.at), '(a) overnight job: "15:00–08:00 next day", then "cont.–08:00"');
+  ok(/15:00 → 08:00 \+1/.test(a.at) && /cont\. → 08:00/.test(a.at), '(a) overnight job: "15:00 → 08:00 +1", then "cont. → 08:00"');
   ok(/Sub-assembly · QPro 2000 ×5/.test(a.at) && /Production/.test(a.at) && /Quality Check/.test(a.at) && /⏱/.test(a.at) && /💻/.test(a.at) && /Weekly production meeting/.test(a.at), '(a) task, pump + quantity, build type, station, ⏱ background, 💻 office, notes');
   ok(/08:30–10:30.*10:45–12:30.*13:00–14:00/.test(a.at), '(a) jobs in time order with start–end');
   ok(/Holiday/.test(a.at) && /Booked in October/.test(a.at) && /⏰ Leaving 14:00/.test(a.at), '(a) absence and one-off hours change');

@@ -247,7 +247,7 @@ Pumps are tested several at a time, so the planner adds up the pumps on test tha
   `npm run test:parts` checks jobs over several days (auto split, edit any part, move, drag, adjust, delete, copy),
   `npm run test:corrections` checks corrections to completed units, `npm run test:mixed` checks mixed pumps on one
   job, `npm run test:print` prints real PDFs (one page per person; 40+ jobs; a 15-job day; a week too big for one
-  page), and `npm run test:unit` runs the unit tests
+  page), `npm run test:print-times` checks printed times never overlap the task text, and `npm run test:unit` runs the unit tests
   for the re-flow logic and corrections (`tests/unit/`, plain Node — no browser needed)
   (all need Playwright:
   `npm i -D playwright && npx playwright install chromium`).
@@ -541,7 +541,8 @@ stage a line underneath shows planned / done **per stage** for the demand due ("
 
 Each person's page has a header (name, role, their working hours / pattern, the week or date, printed by and
 when), then each day: the jobs in time order with start–end, task, pump(s) and quantity, build type, station,
-⏱ background and 💻 office markers and notes; absences and one-off hour changes; a small busy / free line per day;
+⏱ background and 💻 office markers (in their own column) and notes; times in a short form — "13:30 → 11:00 +1", "13:30 → Wed 11:00" for
+later days, "cont. → 11:00" on a day it continues — which wrap onto a second line rather than run into the task; absences and one-off hour changes; a small busy / free line per day;
 and a totals line (busy, free, production vs office hours, units).
 
 **Everything fits on that person's single page.** The page is laid out at its printed size before printing and,

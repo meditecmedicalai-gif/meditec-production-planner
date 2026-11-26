@@ -21,8 +21,7 @@ export const FIT_STEPS = [
 ];
 
 // ------------------------------------------------------------------ content
-/** "09:00–11:00", "15:00–08:00 next day", "cont.–08:00" (a job running over midnight). */
-const timeText = (pl) => `${pl.s < 0 ? 'cont.' : fmtMin(pl.s)}–${pl.e > 24 * 60 ? `${fmtMin(pl.e - 24 * 60)} next day` : fmtMin(pl.e)}`;
+import { timePieces } from '../printFormat.js';
 const PAD = (n) => String(n).padStart(2, '0');
 const stamp = () => { const d = new Date(); return `${fmtDate(d)} ${PAD(d.getHours())}:${PAD(d.getMinutes())}`; };
 
@@ -83,10 +82,10 @@ function personContent(ctx, person, days, single) {
       tot.jobs += 1;
       const pump = office ? null : ctx.pump(a);
       blocks.push({ kind: 'job', iso, el: () => h('div', { class: `pp-job${bg ? ' pp-bg' : ''}${office ? ' pp-office' : ''}`, style: type ? `--type-color:${type.color}` : false },
-        h('span', { class: 'pp-time' }, pl ? timeText(pl) : 'No time'),
+        // time | ⏱ / 💻 | what — three columns, so nothing can sit on top of anything else
+        h('span', { class: 'pp-time' }, (pl ? timePieces(pl, iso) : ['No time']).flatMap((t, i) => (i ? [' ', h('span', { class: 'pp-tp' }, t)] : [h('span', { class: 'pp-tp' }, t)]))),
+        h('span', { class: 'pp-icon', title: bg ? 'Background' : office ? 'Office' : null }, bg ? '⏱' : office ? '💻' : ''),
         h('span', { class: 'pp-what' },
-          bg ? h('span', { class: 'pp-mark', title: 'Background' }, '⏱ ') : null,
-          office ? h('span', { class: 'pp-mark', title: 'Office' }, '💻 ') : null,
           h('b', {}, task?.name || '?'),
           pump ? ` · ${pump}` : '',
           !office && a.qty_target != null && first && !a.any_pump ? ` ×${a.qty_target}` : '',
