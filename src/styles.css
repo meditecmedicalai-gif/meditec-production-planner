@@ -1229,8 +1229,10 @@ input[readonly] { background: var(--card-2, #f4f1ee); color: var(--ink-2); }
 .pp-oneoff { color: #8a4b00; font-weight: 600; }
 .pp-bar { position: relative; flex: 1 1 30mm; min-width: 20mm; max-width: 60mm; height: 1.8mm; background: #dff3e5; border-radius: 1mm; overflow: hidden; align-self: center; }
 .pp-bar span { position: absolute; top: 0; bottom: 0; background: #7C1874; opacity: .75; }
-.pp-job { display: grid; grid-template-columns: 6.4em minmax(0, 1fr); gap: 0 1.5mm; border-left: 2.5px solid var(--type-color, #8a8a8a); padding: .3mm 0 .3mm 1.5mm; margin: .5mm 0; break-inside: avoid; }
-.pp-time { font-variant-numeric: tabular-nums; font-weight: 600; white-space: nowrap; }
+.pp-job { display: grid; grid-template-columns: minmax(7.6em, min-content) 1.35em minmax(0, 1fr); gap: 0 1mm; border-left: 2.5px solid var(--type-color, #8a8a8a); padding: .3mm 0 .3mm 1.5mm; margin: .5mm 0; break-inside: avoid; }
+.pp-time { font-variant-numeric: tabular-nums; font-weight: 600; min-width: 0; }   /* wraps between pieces: "13:30 →" / "11:00 +1" */
+.pp-tp { white-space: nowrap; }
+.pp-icon { text-align: center; line-height: inherit; }
 .pp-what { min-width: 0; overflow-wrap: anywhere; }
 .pp-type, .pp-station, .pp-part, .pp-done { display: inline-block; margin-left: 1.5mm; padding: 0 1mm; border-radius: .8mm; font-size: .85em; border: 1px solid #ccc; }
 .pp-type { color: var(--type-color, #333); border-color: var(--type-color, #ccc); font-weight: 600; }
