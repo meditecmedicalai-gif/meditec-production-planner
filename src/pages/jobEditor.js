@@ -2,7 +2,7 @@
 // "this one / this and future / all" choices for recurring jobs.
 import { h, mount, toast, reportError, openModal, confirmDialog, field, checkbox } from '../ui.js';
 import { supabase } from '../supabase.js';
-import { endDateOf, timeLabel, overlaps, hm, ABSENCE_TYPES } from '../jobs.js';
+import { endDateOf, timeLabel, overlaps, hm, pumpModelsOf, ABSENCE_TYPES } from '../jobs.js';
 import { capacityForDay, isTestingJob, stationMismatch } from '../capacity.js';
 import { PATTERNS, describe as describeRepeat, isoDow, JOB_FIELDS, pick } from '../recurring.js';
 import { toISO, fromISO, addDays, today, fmtDayShort, fmtDayLong } from '../dates.js';
@@ -35,19 +35,36 @@ function options(rows, selectedId, { blank, label = (r) => r.name } = {}) {
 const extend = () => supabase.rpc('extend_recurring_jobs');
 
 // ------------------------------------------------------------------ shared field groups
-/** Pump model select with "Any / mixed pump" for tasks that allow it, plus the optional mix list. */
-function pumpFields(ctx, src, taskSel) {
+/**
+ * Pump model select. Tasks with "Allows mixed pumps" (Settings → Tasks, e.g. Repair, Rework) also offer
+ * "Several pumps (mixed)": a quantity per pump model plus "Any / unknown" for pumps not identified yet.
+ * The job's quantity is then the sum (the database keeps it so).
+ */
+function pumpFields(ctx, src, taskSel, { mix: allowMix = true } = {}) {
   const modelSel = h('select', {});
   const mixInputs = new Map();
+  const qtyOf = (id) => (src?.pump_mix || []).find((x) => (x.pump_model_id || null) === id)?.qty ?? '';
+  const totalLine = h('p', { class: 'mix-total muted small', 'aria-live': 'polite' });
+  const listeners = [];
+  const mixInput = (id, label) => {
+    const inp = h('input', { type: 'number', min: 0, step: 1, inputmode: 'numeric', 'aria-label': `${label} quantity`, value: qtyOf(id) });
+    inp.addEventListener('input', () => { sum(); listeners.forEach((f) => f()); });
+    mixInputs.set(id, inp);
+    return h('label', { class: `mix-item${id ? '' : ' mix-unknown'}` }, h('span', {}, label), inp);
+  };
   const mixBox = h('fieldset', { class: 'skills-fieldset mix-box', hidden: true },
-    h('legend', {}, 'Actual pumps (optional — fill in when known)'),
-    h('div', { class: 'mix-grid' }, ctx.models.filter((m) => m.active).map((m) => {
-      const inp = h('input', { type: 'number', min: 0, step: 1, inputmode: 'numeric', 'aria-label': `${m.name} count`,
-        value: (src?.pump_mix || []).find((x) => x.pump_model_id === m.id)?.qty ?? '' });
-      mixInputs.set(m.id, inp);
-      return h('label', { class: 'mix-item' }, h('span', {}, m.short_code || m.name), inp);
-    })),
-  );
+    h('legend', {}, 'Pumps on this job — quantity per model'),
+    h('div', { class: 'mix-grid' },
+      ctx.models.filter((m) => m.active || qtyOf(m.id) !== '').map((m) => mixInput(m.id, m.short_code || m.name)),
+      mixInput(null, 'Any / unknown')),
+    totalLine);
+  const entries = () => [...mixInputs].map(([id, inp]) => ({ pump_model_id: id, qty: Number(inp.value) || 0 })).filter((x) => x.qty > 0);
+  const sum = () => {
+    const list = entries();
+    const t = list.reduce((a, x) => a + x.qty, 0);
+    totalLine.textContent = t ? `Total ${t} pump${t === 1 ? '' : 's'} — the job’s quantity` : 'Enter how many of each (leave “Any / unknown” for pumps not identified yet).';
+    return t;
+  };
   let init = false;
   const rebuild = () => {
     const task = ctx.taskById.get(taskSel.value);
@@ -55,17 +72,20 @@ function pumpFields(ctx, src, taskSel) {
     init = true;
     const allowAny = task?.allows_any_pump || cur === ANY;
     mount(modelSel, options(ctx.models, null, { blank: '— none —' }),
-      allowAny ? h('option', { value: ANY }, 'Any / mixed pump') : null);
+      allowAny ? h('option', { value: ANY }, allowMix ? 'Several pumps (mixed)' : 'Any / unknown pump') : null);
     modelSel.value = [...modelSel.options].some((o) => o.value === cur) ? cur : '';
-    mixBox.hidden = modelSel.value !== ANY;
+    mixBox.hidden = !allowMix || modelSel.value !== ANY;
+    sum();
   };
-  modelSel.addEventListener('change', () => { mixBox.hidden = modelSel.value !== ANY; });
+  modelSel.addEventListener('change', () => { mixBox.hidden = !allowMix || modelSel.value !== ANY; listeners.forEach((f) => f()); });
   const values = () => {
     const any = modelSel.value === ANY;
-    const mix = any ? [...mixInputs].map(([id, inp]) => ({ pump_model_id: id, qty: Number(inp.value) || 0 })).filter((x) => x.qty > 0) : [];
+    const mix = any && allowMix ? entries() : [];
     return { pump_model_id: any ? null : modelSel.value || null, any_pump: any, pump_mix: mix.length ? mix : null };
   };
-  return { modelSel, mixBox, rebuild, values };
+  /** Mixed with quantities: the total, else null. */
+  const mixTotal = () => (allowMix && modelSel.value === ANY && entries().length ? sum() : null);
+  return { modelSel, mixBox, rebuild, values, mixTotal, onMix: (f) => listeners.push(f) };
 }
 
 /** Repeat pattern fields. */
@@ -244,7 +264,7 @@ function editAssignmentForm({ ctx, person, iso, assignment, isoDays, personById,
     const cur = demandInit ? demandSel.value : (src?.demand_id || '');
     demandInit = true;
     const pv = pumps.values();
-    const list = coverableNotes(ctx.demand.items, { pumpModelId: pv.pump_model_id, anyPump: pv.any_pump });
+    const list = coverableNotes(ctx.demand.items, { pumpModelId: pv.pump_model_id, anyPump: pv.any_pump, models: pumpModelsOf(pv) });
     const current = cur && !list.some((x) => x.note.id === cur) ? ctx.demand.items.find((x) => x.note.id === cur) : null;
     const label = (x) => {
       const n = x.note; const s = x.state;
@@ -277,6 +297,13 @@ function editAssignmentForm({ ctx, person, iso, assignment, isoDays, personById,
   const doneField = showDone ? field('Units done', doneInp, 'So far, e.g. 4 of 5 — counts once per job, towards the demand note it covers. Lower it or clear it to correct.') : null;
   if (doneField) { const row = h('div', { class: 'inline-row' }); doneInp.replaceWith(row); row.append(doneInp, doneClear); }
   const qtyRow = h('div', { class: 'form-grid form-grid-2' }, qtyField, doneField);
+  const syncMixQty = () => {
+    const t = pumps.mixTotal();
+    qty.readOnly = t != null;
+    if (t != null) qty.value = String(t);
+    qtyField.querySelector('.hint').textContent = t != null ? 'The total of the pumps listed above.' : 'Units to complete — for testing tasks, the number of pumps on test.';
+  };
+  pumps.onMix(() => { syncMixQty(); refresh(); });
   const equipField = field('Equipment / test station', equipSel);
   const notesField = field('Notes', notes);
   const notesTop = h('div', { class: 'notes-top' });
@@ -545,6 +572,7 @@ function editAssignmentForm({ ctx, person, iso, assignment, isoDays, personById,
     renderParts();
     setBgOptions();
     pumps.rebuild();
+    syncMixQty();
     rebuildDemand();
     applyOffice();
     // default start: the person's next free slot within their hours (new jobs only, until you type a start)
@@ -633,8 +661,8 @@ function editAssignmentForm({ ctx, person, iso, assignment, isoDays, personById,
     const pv = pumps.values();
     const rep = repeat?.values() || {};
     if (!task) { error.textContent = 'Please choose a task.'; return false; }
-    if (task.requires_pump && !pv.pump_model_id && !pv.any_pump) { error.textContent = `${task.name} needs a pump model${task.allows_any_pump ? ' (or "Any / mixed pump")' : ''}.`; return false; }
-    if (pv.any_pump && !task.allows_any_pump) { error.textContent = '"Any / mixed pump" is only for repair-type tasks.'; return false; }
+    if (task.requires_pump && !pv.pump_model_id && !pv.any_pump) { error.textContent = `${task.name} needs a pump model${task.allows_any_pump ? ' (or several pumps)' : ''}.`; return false; }
+    if (pv.any_pump && !task.allows_any_pump) { error.textContent = `${task.name} doesn’t allow mixed pumps (Settings → Tasks → Allows mixed pumps).`; return false; }
     if (task.requires_pump && !typeSel.value) { error.textContent = 'Please choose a build type.'; return false; }
     const dates = selectedDates().filter(Boolean).sort();
     if (!dates.length) { error.textContent = rep.pattern ? 'Tick the first day it starts on.' : 'Please choose at least one day.'; return false; }
@@ -959,7 +987,7 @@ export function editTemplate({ ctx, template, personById, onSaved }) {
     options([...personById.values()].filter((p) => p.active || p.id === t.person_id), t.person_id));
   personSel.value = t.person_id || '';
   const taskSel = h('select', {}, options(ctx.tasks, t.task_id, { blank: t.task_id ? null : '— choose a task —' }));
-  const pumps = pumpFields(ctx, t, taskSel);
+  const pumps = pumpFields(ctx, t, taskSel, { mix: false });   // recurring templates: no per-model list
   const typeSel = h('select', {}, options(ctx.types, t.build_type_id ?? ctx.defaultType?.id, { blank: '— none —' }));
   const qty = h('input', { type: 'number', min: 0, step: 1, value: t.qty_target ?? '' });
   const startTime = h('input', { type: 'time', step: 300, value: hm(t.start_time) ?? '' });
@@ -1005,7 +1033,7 @@ export function editTemplate({ ctx, template, personById, onSaved }) {
           const pv = pumps.values();
           const rep = repeat.values();
           if (!task) { error.textContent = 'Please choose a task.'; return false; }
-          if (task.requires_pump && !pv.pump_model_id && !pv.any_pump) { error.textContent = `${task.name} needs a pump model${task.allows_any_pump ? ' (or "Any / mixed pump")' : ''}.`; return false; }
+          if (task.requires_pump && !pv.pump_model_id && !pv.any_pump) { error.textContent = `${task.name} needs a pump model${task.allows_any_pump ? ' (or several pumps)' : ''}.`; return false; }
           if ((rep.pattern === 'weekly' || rep.pattern === 'every_n_weeks') && !rep.weekdays.length) { error.textContent = 'Choose the day(s) it repeats on.'; return false; }
           if (endTime.value && !startTime.value) { error.textContent = 'Add a start time (or clear the end time).'; return false; }
           if (rep.end_date && rep.end_date < startDate.value) { error.textContent = '"Repeat until" is before the start.'; return false; }

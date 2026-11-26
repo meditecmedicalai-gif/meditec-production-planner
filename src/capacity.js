@@ -28,7 +28,7 @@
 //
 // Jobs without a start time are NOT counted in the peak (we can't know when
 // they run); they are listed as "untimed" so their times can be added.
-import { intervalOf } from './jobs.js';
+import { intervalOf, pumpQtys } from './jobs.js';
 
 /** Build the lookup structure from loaded rows. */
 export function capacityConfig({ areas = [], limits = [], limitModels = [], sharedTasks = [], models = [], tasks = [], equipment = [] }) {
@@ -69,13 +69,23 @@ export function testAreaOf(j, cfg) {
   if (cfg.testing.has(j.task_id) && j.pump_model_id && cfg.modelArea.has(j.pump_model_id)) return cfg.modelArea.get(j.pump_model_id);
   return null;
 }
-export const isTestingJob = (j, cfg) => Boolean(testAreaOf(j, cfg));
+/**
+ * A job with mixed pumps counts each pump model towards its own test area and limit groups: one entry per
+ * model (same id, so warnings land on the real job). Pumps not identified yet ("Any / unknown") only count
+ * where the job is booked on a test station.
+ */
+export function perModel(j) {
+  if (!j.any_pump) return [j];
+  return pumpQtys(j).map((x) => ({ ...j, pump_model_id: x.pump_model_id, qty_target: x.qty, any_pump: false, pump_mix: null }));
+}
+export const isTestingJob = (j, cfg) => perModel(j).some((x) => Boolean(testAreaOf(x, cfg)));
 
 /** Name shown for an area: its station(s), else the area name. */
 export const areaLabel = (area, cfg) => cfg.areaStations.get(area.id)?.join(' / ') || area.name;
 
 /** Warning when a pump is booked on a station belonging to another test area. */
 export function stationMismatch(j, cfg) {
+  if (j.any_pump) { for (const x of perModel(j)) { const m = stationMismatch(x, cfg); if (m) return m; } return null; }
   const station = j.equipment_id && cfg.stationArea.get(j.equipment_id);
   const home = j.pump_model_id && cfg.modelArea.get(j.pump_model_id);
   if (!station || !home || station === home) return null;
@@ -103,10 +113,13 @@ export function equipmentShared(eq, cfg) {
 function count(active, cfg, keep) {
   let total = 0;
   const sharedMax = new Map();
+  const seqJobs = new Set();   // one at a time: a job counts once, however many models it has on the bench
   for (const j of active) {
     if (!keep(j)) continue;
     const area = testAreaOf(j, cfg);
-    const q = isSequential(cfg.areaById.get(area)) ? 1 : (j.qty_target || 0);
+    const seq = isSequential(cfg.areaById.get(area));
+    if (seq && j.id != null) { if (seqJobs.has(`${area}|${j.id}`)) continue; seqJobs.add(`${area}|${j.id}`); }
+    const q = seq ? 1 : (j.qty_target || 0);
     const key = `${area}|${j.pump_model_id}`;
     if (cfg.shared.get(area)?.has(j.task_id)) sharedMax.set(key, Math.max(sharedMax.get(key) || 0, q));
     else total += q;
@@ -127,11 +140,15 @@ const hhmmOf = (minutesSinceEpoch) => {
 export function capacityInWindow(jobs, cfg, from, to) {
   const tj = [];
   const untimed = [];
-  for (const j of jobs) {
-    if (!isTestingJob(j, cfg)) continue;
+  for (const j of jobs.flatMap(perModel)) {
+    if (!testAreaOf(j, cfg)) continue;
     const [s, e] = intervalOf(j);
     if (!(e > from && s < to)) continue;
-    if (!j.start_time) { untimed.push({ job: j, area: testAreaOf(j, cfg) }); continue; }
+    if (!j.start_time) {
+      const area = testAreaOf(j, cfg);
+      if (!untimed.some((u) => u.area === area && u.job.id != null && u.job.id === j.id)) untimed.push({ job: jobs.find((o) => o.id === j.id) || j, area });
+      continue;
+    }
     // attended multi-day jobs: only the working hours of each day (cfg.segmentsOf, set by the planner)
     for (const [ss, se] of cfg.segmentsOf ? cfg.segmentsOf(j) : [[s, e]]) {
       if (se > from && ss < to) tj.push({ j, s: Math.max(ss, from), e: Math.min(se, to) });

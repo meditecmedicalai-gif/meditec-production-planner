@@ -192,7 +192,7 @@ const TASKS = {
     { key: 'counts_as_output', label: 'Counts as output (units produced)', badge: 'counts as output', accent: true },
     { key: 'is_background', label: 'Background / unattended (runs while the person does other work, e.g. soak test). Can be overridden per job.', badge: '⏱ background' },
     { key: 'is_testing', label: 'Testing task — counts towards test capacity (quantity = pumps on test)', badge: '🧪 testing' },
-    { key: 'allows_any_pump', label: 'Allows “Any / mixed pump” (e.g. rental repairs)', badge: 'any pump' },
+    { key: 'allows_any_pump', label: 'Allows mixed pumps (several pump models on one job, each with a quantity — e.g. Repair, Rework)', badge: 'mixed pumps' },
   ],
   extraFields: [
     { key: 'category', label: 'Category', type: 'select', options: () => [{ id: 'production', name: 'Production', active: true }, { id: 'office', name: 'Office / non-production', active: true }],

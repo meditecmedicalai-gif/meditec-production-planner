@@ -7,7 +7,7 @@
 -- The whole check is ONE statement. At the end it deliberately stops
 -- with an "error" whose message is the report:
 --
---     RLS CHECK FINISHED: 176 passed, 0 failed ...
+--     RLS CHECK FINISHED: 181 passed, 0 failed ...
 --
 -- Raising that error is what undoes every bit of test data, so nothing
 -- is left behind. Every line should start with PASS.
@@ -50,6 +50,7 @@ declare
   job_h uuid;      -- a job over two days (013)
   job_p uuid;
   rows_j jsonb;
+  mix_task uuid;   -- a task that allows mixed pumps (014)
   passed int;
   failed int;
 begin
@@ -232,6 +233,14 @@ begin
   res := res || case when exists (select 1 from public.demand_notes where status_override in ('planned', 'partly'))
     then format('FAIL  setup   %s demand note(s) still have a hand-set Planned status (run migration 012)', (select count(*) from public.demand_notes where status_override in ('planned', 'partly')))
     else 'PASS  setup   no hand-set "Planned" statuses left — planned is worked out from jobs + manual quantities' end;
+
+  -- 014: "Allows mixed pumps" — on for repair / rework-type tasks, never on office tasks
+  select string_agg(name, ', ' order by sort_order) into st_names from public.tasks where allows_any_pump and active;
+  res := res || case
+    when st_names is null then 'FAIL  setup   no active task allows mixed pumps — tick "Allows mixed pumps" for Repair / Rework in Settings → Tasks (migration 014)'
+    when exists (select 1 from public.tasks where allows_any_pump and coalesce(to_jsonb(tasks) ->> 'category', 'production') = 'office')
+      then format('FAIL  setup   office tasks can''t allow mixed pumps: %s', (select string_agg(name, ', ') from public.tasks where allows_any_pump and to_jsonb(tasks) ->> 'category' = 'office'))
+    else format('PASS  setup   mixed pumps allowed on: %s', st_names) end;
 
   -- 013: jobs over several days are one job; corrections to completed units
   probs := '{}';
@@ -633,18 +642,48 @@ begin
       select count(*) into n from public.audit_log where table_name = 'test_limit_models' and changed_at >= now();
       res := res || format('%s  admin   test limit change written to audit log', case when n >= 1 then 'PASS' else 'FAIL' end);
 
-      -- Any / mixed pump
-      insert into public.assignments (person_id, work_date, task_id, any_pump, pump_mix)
-      values (pid, current_date, (select id from public.tasks where allows_any_pump order by sort_order limit 1), true,
-              '[{"qty": 2}]'::jsonb);
-      res := res || 'PASS  admin   "Any / mixed pump" repair job saved'::text;
+      -- Mixed pumps (tasks with "Allows mixed pumps"): a quantity per model + "Any / unknown"; quantity = the sum
+      select id into mix_task from public.tasks where allows_any_pump order by sort_order limit 1;
+      rows_j := jsonb_build_array(
+        jsonb_build_object('pump_model_id', (select id from public.pump_models where active order by sort_order limit 1), 'qty', 3),
+        jsonb_build_object('pump_model_id', (select id from public.pump_models where active order by sort_order offset 1 limit 1), 'qty', 2),
+        jsonb_build_object('pump_model_id', null, 'qty', 1));
+      insert into public.assignments (person_id, work_date, task_id, any_pump, pump_mix, qty_target)
+      values (pid, current_date, mix_task, true, rows_j, 99) returning id into job_h;
+      res := res || format('%s  admin   mixed-pump job saved: 3 + 2 + 1 (Any / unknown) → quantity 6 (the sum)',
+        case when (select qty_target from public.assignments where id = job_h) = 6 then 'PASS' else 'FAIL' end);
       begin
         insert into public.assignments (person_id, work_date, task_id, any_pump)
         values (pid, current_date, (select id from public.tasks where requires_pump and not allows_any_pump order by sort_order limit 1), true);
         ok := false;
       exception when check_violation then ok := true;
       end;
-      res := res || format('%s  admin   "Any / mixed pump" refused on a non-repair task', case when ok then 'PASS' else 'FAIL' end);
+      res := res || format('%s  admin   mixed pumps refused on a task without "Allows mixed pumps"', case when ok then 'PASS' else 'FAIL' end);
+      begin
+        update public.assignments set pump_mix = jsonb_build_array(jsonb_build_object('pump_model_id', null, 'qty', 0)) where id = job_h;
+        ok := false;
+      exception when check_violation then ok := true;
+      end;
+      res := res || format('%s  admin   pump quantity 0 (or not a whole number) refused', case when ok then 'PASS' else 'FAIL' end);
+      begin
+        update public.assignments set pump_mix = rows_j || jsonb_build_array(rows_j -> 0) where id = job_h;
+        ok := false;
+      exception when check_violation then ok := true;
+      end;
+      res := res || format('%s  admin   the same pump model listed twice refused', case when ok then 'PASS' else 'FAIL' end);
+      begin
+        update public.assignments set pump_mix = jsonb_build_array(jsonb_build_object('pump_model_id', gen_random_uuid(), 'qty', 1)) where id = job_h;
+        ok := false;
+      exception when foreign_key_violation then ok := true;
+      end;
+      res := res || format('%s  admin   a pump model that doesn''t exist refused', case when ok then 'PASS' else 'FAIL' end);
+      begin
+        insert into public.assignments (person_id, work_date, task_id, pump_model_id, pump_mix)
+        values (pid, current_date, mix_task, (select id from public.pump_models order by sort_order limit 1), rows_j);
+        ok := false;
+      exception when check_violation then ok := true;
+      end;
+      res := res || format('%s  admin   a list of pumps without "mixed pumps" refused', case when ok then 'PASS' else 'FAIL' end);
 
       -- Recurring: every working day for 14 days, one removed date, one absent day
       insert into public.people (name) values ('RLS repeat person') returning id into pid2;

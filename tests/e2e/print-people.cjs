@@ -38,7 +38,10 @@ J('pA', D(0), 'Sub-assembly', 510, 630, { qty: 5, notes: 'Batch 14' }); J('pA', 
 J('pA', D(0), 'Soak / burn-in test', 900, 480, { qty: 4, bg: true, eq: 'eqQC' });   // overnight 15:00 → 08:00
 J('pA', D(1), 'Final assembly', 510, 720, { qty: 6, model: 'MediAir', type: 'Rental', notes: LONG }); J('pA', D(1), 'Documentation', 780, 900, { office: true });
 J('pA', D(2), 'Rework', 510, 630, { qty: 2, model: 'Simplex', type: 'Customer' }); J('pA', D(2), 'Functional test / calibration', 660, 780, { qty: 2, model: 'Simplex', eq: 'eqQC' });
-J('pA', D(4), 'Final assembly', 510, 960, { qty: 8, type: 'Trial' }); J('pA', D(4), 'Admin / Email', null, null, { office: true });
+J('pA', D(4), 'Final assembly', 510, 960, { qty: 8, type: 'Trial' });
+// mixed pumps (Rework allows them): prints per model, no extra total
+J('pA', D(2), 'Rework', 870, 960, { qty: 5 });
+Object.assign(db.assignments.at(-1), { any_pump: true, pump_model_id: null, pump_mix: [{ pump_model_id: M('QPro 2000'), qty: 3 }, { pump_model_id: M('MediAir'), qty: 2 }] }); J('pA', D(4), 'Admin / Email', null, null, { office: true });
 db.absences.push({ id: 'abA', person_id: 'pA', start_date: D(3), end_date: D(3), absence_type: 'holiday', notes: 'Booked in October' });
 db.person_day_hours.push({ id: 'dhA', person_id: 'pA', work_date: D(1), works: true, start_time: null, end_time: '14:00:00', lunch_time: null, break_time: null, lunch_minutes: null, break_minutes: null, notes: 'Dentist' });
 // (b) Irwin: 45 jobs in the week (9 a day), some with long notes
@@ -121,7 +124,8 @@ const isPortraitA4 = (p) => Math.abs(p.w - 595.3) < 3 && Math.abs(p.h - 841.9) <
   ok(a.unclipped, '(a) nothing clipped on any page');
   ok(/Amira Khan/.test(a.at) && /Senior assembler/.test(a.at) && /Hours: Mon 08:30–16:30 · Tue 08:30–14:00 · Wed–Fri 08:30–16:30/.test(a.at) && /Printed by Prince/.test(a.at) && /Week \d+/.test(a.at),
     '(a) header: name, role, hours, week, printed by + when');
-  ok(a.jobs === 11, `(a) all 10 jobs, the overnight soak on both days (${a.jobs} lines)`);
+  ok(a.jobs === 12, `(a) all 11 jobs, the overnight soak on both days (${a.jobs} lines)`);
+  ok(/Rework · QPro ×3, MediAir ×2(?! ×5)/.test(a.at), '(a) mixed pumps printed per model: "Rework · QPro ×3, MediAir ×2"');
   ok(/15:00–08:00 next day/.test(a.at) && /cont\.–08:00/.test(a.at), '(a) overnight job: "15:00–08:00 next day", then "cont.–08:00"');
   ok(/Sub-assembly · QPro 2000 ×5/.test(a.at) && /Production/.test(a.at) && /Quality Check/.test(a.at) && /⏱/.test(a.at) && /💻/.test(a.at) && /Weekly production meeting/.test(a.at), '(a) task, pump + quantity, build type, station, ⏱ background, 💻 office, notes');
   ok(/08:30–10:30.*10:45–12:30.*13:00–14:00/.test(a.at), '(a) jobs in time order with start–end');
@@ -173,7 +177,7 @@ const isPortraitA4 = (p) => Math.abs(p.w - 595.3) < 3 && Math.abs(p.h - 841.9) <
   r = await printToPdf(pg, 'print-overflow', async () => ({ jobs: await pg.locator('.pp-root .pp-page .pp-job').count(), unclipped: await unclipped(pg),
     cont: await pg.locator('.pp-root .pp-footer', { hasText: 'Continued on next page' }).count() }));
   ok(r.pages.length === 1 + zPages, `PDF: Amira 1 page + Zoe ${zPages} pages (${r.pages.length})`);
-  ok(r.seen.jobs === 11 + 150 && r.seen.unclipped, `nothing lost or clipped: all 160 jobs are on the pages (${r.seen.jobs} lines)`);
+  ok(r.seen.jobs === 12 + 150 && r.seen.unclipped, `nothing lost or clipped: all 161 jobs are on the pages (${r.seen.jobs} lines)`);
   ok(r.seen.cont === zPages - 1, '"Continued on next page" at the bottom of each page that continues');
   if (r.text) ok(/Continued on next page/.test(r.text) && /Zoe Long — continued \(page 2\)/.test(r.text), 'PDF text: "Continued on next page" and "Zoe Long — continued (page 2)"');
   await cleanup(pg);

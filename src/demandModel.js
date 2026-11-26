@@ -1,7 +1,7 @@
 // Demand notes ↔ jobs: planned quantity, automatic status, due-date words.
 // Pure functions (no DOM, no database) — shared by the Demand page, the
 // planner panel, Today, the weekly summary and the Excel export.
-import { endDateOf } from './jobs.js';
+import { endDateOf, pumpQtys } from './jobs.js';
 import { toISO, fromISO, addDays } from './dates.js';
 
 export const PRIORITY_RANK = { urgent: 0, high: 1, normal: 2, low: 3 };
@@ -46,10 +46,10 @@ export function demandState(note, links, { taskById, todayISO, stagesByModel = n
   const myLogs = logs.filter((l) => l.demand_id === note.id)
     .sort((a, b) => (b.work_date || '').localeCompare(a.work_date || '') || (b.created_at || '').localeCompare(a.created_at || ''));
   const stages = stageIds.map((tid) => {
-    const plannedJobs = roots.filter((a) => a.task_id === tid).reduce((t, a) => t + (a.qty_target || 0), 0);
+    const plannedJobs = roots.filter((a) => a.task_id === tid).reduce((t, a) => t + qtyForNote(a, note), 0);
     const plannedManual = myManual.filter((m) => m.task_id === tid).reduce((t, m) => t + (m.qty || 0), 0);
     // units done count once per job (part 1); logged entries may be corrections (negative)
-    const doneJobs = roots.filter((a) => a.task_id === tid).reduce((t, a) => t + (a.qty_done || 0), 0);
+    const doneJobs = roots.filter((a) => a.task_id === tid).reduce((t, a) => t + doneForNote(a, note), 0);
     const doneLogged = myLogs.filter((l) => (l.task_id || last) === tid).reduce((t, l) => t + (l.qty || 0), 0);
     return { taskId: tid, name: taskById.get(tid)?.name || 'Stage', plannedJobs, plannedManual, planned: plannedJobs + plannedManual, doneJobs, doneLogged,
       done: Math.max(0, doneJobs + doneLogged) }; // never below 0
@@ -161,8 +161,23 @@ export function suggestDate(neededBy, todayISO) {
   return toISO(d) < toISO(t) ? toISO(t) : toISO(d);
 }
 
-/** Notes a job for this pump can cover (not done; same model, or Any / mixed). */
-export function coverableNotes(items, { pumpModelId, anyPump }) {
+/**
+ * Notes a job can cover (not done): same model; a job with mixed pumps can cover a note for any model it
+ * lists (`models`) or an "Any / mixed pump" note.
+ */
+export function coverableNotes(items, { pumpModelId, anyPump, models = [] }) {
   return items.filter((x) => x.state.status !== 'done'
-    && (anyPump ? x.note.any_pump : x.note.pump_model_id && x.note.pump_model_id === pumpModelId));
+    && (anyPump ? x.note.any_pump || (x.note.pump_model_id && models.includes(x.note.pump_model_id))
+      : x.note.pump_model_id && x.note.pump_model_id === pumpModelId));
 }
+
+/**
+ * How many of a job's pumps count for a note: a job for one model → its quantity; a job with mixed
+ * pumps → only that model's quantity (an "Any / mixed pump" note counts them all).
+ */
+export function qtyForNote(job, note) {
+  if (!job.any_pump || note.any_pump || !note.pump_model_id) return job.qty_target || 0;
+  return pumpQtys(job).filter((x) => x.pump_model_id === note.pump_model_id).reduce((t, x) => t + x.qty, 0);
+}
+/** Units done on a job that count for a note (mixed pumps: at most that model's quantity). */
+export const doneForNote = (job, note) => (job.any_pump && !note.any_pump ? Math.min(job.qty_done || 0, qtyForNote(job, note)) : job.qty_done || 0);
